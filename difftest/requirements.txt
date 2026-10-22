@@ -1,0 +1,7 @@
+# Pinned, hash-checked Python dependency of the differential test.
+# pynmms 0.15.1 has no third-party dependencies, so this is the whole closure.
+# The hash is of the wheel (verified against PyPI's published sha256 and by
+# `pip hash` on a downloaded copy). Install with:
+#   python3 -m venv <dir> && <dir>/bin/pip install --only-binary :all: --require-hashes -r difftest/requirements.txt
+pynmms==0.15.1 \
+    --hash=sha256:3f114a6f0d52074fe00472f6ad620b6f3274c382753d50a78e43ec9dfdbc3ead

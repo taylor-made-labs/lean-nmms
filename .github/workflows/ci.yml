@@ -1,0 +1,76 @@
+# Build the library and the executable, then run the project's tests.
+#
+# Action pins: every `uses:` line is a full commit SHA. Each was read from the
+# action's public tag with `git ls-remote --tags` (a lightweight tag, so the
+# SHA is the commit); the tag is in the trailing comment. Re-check the SHA
+# against the tag before relying on it.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lean:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      # Installs elan, then the toolchain named in lean-toolchain, then runs
+      # `lake build` (the library and the nmms-lean executable).
+      - uses: leanprover/lean-action@24581d74d674803a25a81b10b059c5c0cdd344c6 # v1.6.2
+        with:
+          auto-config: false
+          build: true
+          use-github-cache: false
+
+      - name: Proof audits (kernel examples and axiom checks)
+        run: |
+          set -e
+          lake env lean Axioms.lean
+          lake env lean tests/FixesDerivation.lean
+          lake env lean tests/FixesGround.lean
+          lake env lean tests/AllConstantsAxioms.lean | tee axioms.out
+          grep -q 'FIXES_AXIOMS_OK' axioms.out
+
+      - name: Input-hardening regression test (runs the built executable)
+        run: python3 -I difftest/malformed_test.py
+
+      - name: Python-driven Lean tests
+        run: python3 -B -m unittest -v tests.test_fixes_lean
+
+  differential:
+    # Compares the built executable with pyNMMS 0.15.1 (pinned, hash-checked
+    # in difftest/requirements.txt) on generated cases.
+    needs: lean
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: leanprover/lean-action@24581d74d674803a25a81b10b059c5c0cdd344c6 # v1.6.2
+        with:
+          auto-config: false
+          build: true
+          use-github-cache: false
+      - name: Install pyNMMS
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --only-binary :all: --require-hashes -r difftest/requirements.txt
+      - name: Differential test (500 cases)
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" -I difftest/difftest.py --cases 500 --timeout 20 | tee diff.out
+          python3 - <<'PY'
+          import json
+          s = json.load(open("diff.out"))
+          bad = {k: s[k] for k in ("disagree", "cache_disagree", "parse_mismatch", "lean_error",
+                                   "certs_rejected", "refute_rejected", "lean_timeout") if s[k]}
+          assert not bad, bad
+          PY
