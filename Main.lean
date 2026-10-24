@@ -1,8 +1,15 @@
 /-
   nmms-lean: the verified NMMS decision procedure as a command-line program.
 
+  "derivable" means derivable in NMMS (Hlobil and Brandom 2025, ch. 3) from
+  the supplied base and nothing else: the axioms are the base's atomic
+  sequents. Containment is not added, so over a base without `p |~ p` the
+  answer for `p ⇒ p` is false; a caller who wants Containment supplies it,
+  for instance as a MONOTONE entry `a |~ a` for each atom `a`.
+
   Reads JSON Lines on standard input, one query per line, and writes one JSON
-  result per line. A query:
+  result per non-blank line (a blank line within --max-line-bytes gets no
+  answer). A query:
 
     { "id": <any>,
       "base": <pyNMMS MaterialBase.to_dict() output>,
@@ -10,27 +17,86 @@
       "cert": C,                        -- optional
     "engine": "backtracking" }         -- optional; default is the fast search
 
-  F is a formula tree: {"atom": "p"} | {"neg": F} | {"conj": [F, F]} |
-  {"disj": [F, F]} | {"impl": [F, F]}. Formulas arrive as trees, not pyNMMS
-  sentence strings, so that pyNMMS's parser stays outside what is compared;
-  the harness builds each tree from pyNMMS's own parse.
+  F is a formula tree, an object with exactly one key: {"atom": "p"} (a
+  string) | {"neg": F} | {"conj": [F, F]} | {"disj": [F, F]} |
+  {"impl": [F, F]}; anything else, an object with a further key included, is
+  refused. Formulas arrive as trees, not pyNMMS sentence strings, so that
+  pyNMMS's parser stays outside what is compared; the harness builds each
+  tree from pyNMMS's own parse.
+
+  The base's "language" (pyNMMS's L_B), when present, must contain every atom
+  of the base's entries' antecedents and consequents and of the query: the
+  base relation is a relation on sets of atoms of L_B, and a sentence with
+  another atom is not a sentence of the language, so such a query is refused
+  with an error rather than answered. A GUARDED entry's defeater atoms may lie
+  outside it, as pyNMMS 0.15.1 allows (its `to_dict()` keeps them outside
+  L_B); such a defeater can never fire, since no query may mention its atom. Without "language" the language is taken to be whatever atoms
+  occur. A base that lists the same pair (as sets) twice is refused, since
+  pyNMMS keeps one policy per pair and the two readings could differ.
+
+  An entry's "robustness" is read as pyNMMS 0.15.1's `Robustness.from_json`
+  reads it: absent or null is EXACT; a string is a kind ("guarded" alone has
+  no defeaters and matches as MONOTONE); an object has "kind" (default
+  "exact") and "unless" (absent or null: no defeaters; otherwise an object
+  whose "antecedent", "consequent" and "pairs" are type-checked for every
+  kind). As in pyNMMS, an exclusion pair with both sides empty is refused,
+  and so are defeaters on an EXACT or MONOTONE entry, an object with no
+  "kind" included. nmms-lean accepts no robustness value that pyNMMS refuses
+  and reads every value both accept the same way. It refuses a few that
+  pyNMMS reads leniently: an "unless" of false, a zero number, "" or [] and
+  "pairs" of {} or "" (pyNMMS: no defeaters); where a list of atoms is
+  expected (the "antecedent" and "consequent" of "unless" or of a pair), a
+  string (pyNMMS: its characters) or an object (pyNMMS: its keys); and a
+  defeater that is a number, a boolean or null.
+
+  Before parsing, a line is refused if one of its JSON strings has an
+  unpaired UTF-16 surrogate escape: a `\uD800`..`\uDBFF` escape not
+  immediately followed by a `\uDC00`..`\uDFFF` escape, or a `\uDC00`..`\uDFFF`
+  escape on its own (hex digits in either case). `Json.parse` turns each such
+  escape into U+FFFD, so distinct names such as "\udc80" and "\udc81" would
+  become one atom and the answer would be about another base or sequent. A
+  surrogate pair is one character and is accepted.
+  A number longer than 100 characters, or with an exponent of more than two
+  digits, is refused as well: `Json.parse` builds such numbers digit by digit
+  as big integers (`1e1000000` alone would take minutes and gigabytes), and
+  no field needs one.
+
+  An object that repeats a key is refused too: `Json.parse` would keep only
+  the last value (`{"atom": "r", "atom": "p"}` would be read as `p`).
+  `prescan` counts the members each line has (every `:` outside a string) and
+  `handle` refuses the line when the parsed value has fewer. These line-level
+  errors, like bad JSON or UTF-8, a line over `--max-line-bytes` or nesting
+  over `--max-depth`, are {"error": "..."} without an "id".
 
   C is a certificate: {"ax": true} | {"side": "L"|"R", "principal": F,
-  "premises": [C] or [C, C, C]}.
+  "keep": bool (optional, default false), "premises": [C] or [C, C, C]}.
+  Nothing else is a certificate node: "ax" with another value or beside
+  another key, another "side", a "keep" that is not a boolean, a principal
+  that is an atom (no rule has one), or an unknown key is refused.
+  An "ax" leaf must be an atomic sequent in the base. "keep": true selects the
+  book's rule instance whose context still contains the principal sentence
+  (in the book `Γ, A` is `Γ ∪ {A}`, so `Γ` may contain `A`).
 
   The result: {"id": ..., "derivable": bool, "cert_ok": bool or null,
   "refute_ok": bool or null, "refute_len": n or null} or
   {"id": ..., "error": "..."}. "derivable" comes from `NMMS.fastProve`, the
   non-backtracking search, which `NMMS.fastProve_iff` proves equal to
   derivability (with "engine": "backtracking", from `NMMS.prove`, proved
-  equal by `NMMS.prove_iff`); "cert_ok" comes from `NMMS.check`, which
-  `NMMS.check_sound` proves sound. For an underivable sequent the program also
-  builds a one-branch refutation (`NMMS.findRefute`, unverified) and checks it
-  with `NMMS.refute`, which `NMMS.refute_sound` proves sound: "refute_ok" is
-  that check's result and "refute_len" the branch length.
+  equal by `NMMS.prove_iff`; both together: `NMMS.reasoner_correct`);
+  "cert_ok" comes from `NMMS.check`, which `NMMS.check_sound` proves sound and
+  `NMMS.check_complete` complete. For an underivable sequent the program also
+  builds a one-branch refutation (`NMMS.findRefute`, which returns only
+  refutations `NMMS.refute` accepts, `NMMS.findRefute_sound`, and returns one
+  on every underivable sequent, `NMMS.findRefute_complete`) and checks it with
+  `NMMS.refute`, which `NMMS.refute_sound` proves sound: "refute_ok" is that
+  check's result, `true` exactly on the underivable sequents
+  (`NMMS.refuteOk_iff`), and "refute_len" the branch length.
 
   A query with "op": "closure" asks whether a claim is in the closure of
-  initial premises (`NMMS.Closure`, `LeanNmms/Derivation.lean`):
+  initial premises under chained single-conclusion NMMS steps (`NMMS.Closure`,
+  `LeanNmms/Derivation.lean`). That is a further calculation, not NMMS
+  derivability (NMMS has no Cut), so its answer is "in_closure", never
+  "derivable":
 
     { "op": "closure", "id": <any>, "request_hash": H,
       "base": <pyNMMS base>, "initial_premises": [F, ...], "claim": F,
@@ -42,10 +108,10 @@
   of {"op", "base", "initial_premises", "claim"}; the checker recomputes it and
   refuses a mismatch. The certificate is deliberately outside the hash, so a
   changed certificate is judged by the checker, not by a checksum. The answer:
-  {"id", "request_hash" (echoed), "accepted": bool, "derivable": bool or null,
+  {"id", "request_hash" (echoed), "accepted": bool, "in_closure": bool or null,
   "reason" (when not accepted)}. "accepted" is `NMMS.checkDerivation` (proved
   sound by `NMMS.checkDerivation_sound`) or `NMMS.checkRefutation` (proved
-  sound by `NMMS.checkRefutation_sound`); "derivable" is true for an accepted
+  sound by `NMMS.checkRefutation_sound`); "in_closure" is true for an accepted
   derivation, false for an accepted refutation, and null when the certificate
   is refused (the checker then does not claim either answer).
 
@@ -67,19 +133,27 @@ def field? (j : Json) (k : String) : Option Json :=
   | .ok v => some v
   | .error _ => none
 
+/-- A formula is an object with exactly one key (see the header); an object
+with a further key is refused, not read by one of its keys. -/
 partial def parseFormula (j : Json) : Except String (Formula String) := do
-  if let some v := field? j "atom" then return .atom (← v.getStr?)
-  if let some v := field? j "neg" then return .neg (← parseFormula v)
-  let bin (k : String) : Option (Except String (Formula String × Formula String)) :=
-    (field? j k).map fun v => do
-      let arr ← v.getArr?
-      if h : arr.size = 2 then
-        return (← parseFormula arr[0], ← parseFormula arr[1])
-      else throw s!"{k} needs two operands"
-  if let some r := bin "conj" then let (a, b) ← r; return .conj a b
-  if let some r := bin "disj" then let (a, b) ← r; return .disj a b
-  if let some r := bin "impl" then let (a, b) ← r; return .impl a b
-  throw s!"not a formula: {j.compress}"
+  let bad (_ : Unit) : String :=
+    s!"not a formula (an object with exactly one key: atom, neg, conj, disj or impl): {j.compress}"
+  let .obj kvs := j | throw (bad ())
+  let [(k, v)] := kvs.toList | throw (bad ())
+  let bin (_ : Unit) : Except String (Formula String × Formula String) := do
+    let arr ← v.getArr?
+    if h : arr.size = 2 then
+      return (← parseFormula arr[0], ← parseFormula arr[1])
+    else throw s!"{k} needs two operands"
+  match k with
+  | "atom" => match v with
+    | .str a => return .atom a
+    | _ => throw s!"atom must be a string: {j.compress}"
+  | "neg" => return .neg (← parseFormula v)
+  | "conj" => let (a, b) ← bin (); return .conj a b
+  | "disj" => let (a, b) ← bin (); return .disj a b
+  | "impl" => let (a, b) ← bin (); return .impl a b
+  | _ => throw (bad ())
 
 def asObj (what : String) (j : Json) : Except String Json :=
   match j with
@@ -92,47 +166,91 @@ def optStrList (j : Json) (k : String) : Except String (List String) :=
   | some v => strList v
   | none => pure []
 
+/-- pyNMMS's `Robustness.from_json` with its `exclusion` and `__post_init__`
+checks (see the header): "unless" is read and type-checked for every kind,
+an exclusion pair needs an atom, and only a GUARDED entry may have defeaters. -/
 def parseRobustness (j? : Option Json) : Except String (Robustness String) := do
-  match j? with
-  | none => return .exact
-  | some Json.null => return .exact
-  | some j =>
-    let kind ← match j with
-      | .str s => pure s
-      | .obj _ => match field? j "kind" with
-        | some k => k.getStr?
+  let (kind, unless?) ← match j? with
+    | none | some Json.null => pure ("exact", none)
+    | some (.str s) => pure (s, none)
+    | some j@(.obj _) =>
+      let kind ← match field? j "kind" with
+        | some (.str k) => pure k
+        | some _ => throw "robustness kind must be a string"
         | none => pure "exact"
-      | _ => throw "robustness must be a string or an object"
-    match kind with
-    | "exact" => return .exact
-    | "monotone" => return .monotone
-    | "guarded" =>
-      let u ← match field? j "unless" with
-        | none | some Json.null => pure (Json.mkObj [])
-        | some v => asObj "unless" v
-      let left ← optStrList u "antecedent"
-      let right ← optStrList u "consequent"
-      let pairsJ ← match field? u "pairs" with
-        | some v => (do let a ← v.getArr?; pure a.toList)
-        | none => pure []
-      let pairs ← pairsJ.mapM fun p => do
-        let p ← asObj "unless.pairs entry" p
-        let x ← optStrList p "antecedent"
-        let y ← optStrList p "consequent"
-        pure (x, y)
-      return .guarded { left, right, pairs }
-    | k => throw s!"unknown robustness kind {k}"
+      pure (kind, field? j "unless")
+    | some _ => throw "robustness must be a string or an object"
+  let u ← match unless? with
+    | none | some Json.null => pure (Json.mkObj [])
+    | some v => asObj "unless" v
+  let left ← optStrList u "antecedent"
+  let right ← optStrList u "consequent"
+  let pairsJ ← match field? u "pairs" with
+    | some (.arr a) => pure a.toList
+    | some _ => throw "unless.pairs must be an array"
+    | none => pure []
+  let pairs ← pairsJ.mapM fun p => do
+    let p ← asObj "unless.pairs entry" p
+    let x ← optStrList p "antecedent"
+    let y ← optStrList p "consequent"
+    if x.isEmpty && y.isEmpty then throw "an exclusion pair needs at least one atom"
+    pure (x, y)
+  let defeaters := !(left.isEmpty && right.isEmpty && pairs.isEmpty)
+  match kind with
+  | "guarded" => return .guarded { left, right, pairs }
+  | "exact" | "monotone" =>
+    if defeaters then
+      throw s!"defeaters (unless) are only meaningful for guarded entries, not {kind}"
+    return if kind == "exact" then .exact else .monotone
+  | k => throw s!"unknown robustness kind {k}"
 
-/-- `consequences` is required (pyNMMS's `base.schema.json`) and must be an array. -/
-def parseBase (j : Json) : Except String (List (Entry String)) := do
+/-- A parsed base: its entries and, when given, its language L_B. -/
+structure ParsedBase where
+  entries : List (Entry String)
+  language : Option (List String)
+
+/-- Every atom of a formula. -/
+def formulaAtoms : Formula String → List String
+  | .atom a => [a]
+  | .neg A => formulaAtoms A
+  | .conj A B | .disj A B | .impl A B => formulaAtoms A ++ formulaAtoms B
+
+/-- Refuse an atom outside the base's declared language (see the header). -/
+def checkLanguage (pb : ParsedBase) (what : String) (atoms : List String) :
+    Except String Unit :=
+  match pb.language with
+  | none => pure ()
+  | some L => match atoms.find? (fun a => !L.contains a) with
+    | some a => throw s!"atom {a} in {what} is not in the base's language"
+    | none => pure ()
+
+def checkFormulas (pb : ParsedBase) (what : String) (fs : List (Formula String)) :
+    Except String Unit :=
+  checkLanguage pb what (fs.flatMap formulaAtoms)
+
+/-- `consequences` is required (pyNMMS's `base.schema.json`) and must be an
+array; `language`, when present, is a list of atom names that must contain
+every atom of the entries' antecedents and consequents (a defeater atom may
+lie outside it, as pyNMMS allows; see the header). A pair listed twice is
+refused. -/
+def parseBase (j : Json) : Except String ParsedBase := do
   let cs ← match field? j "consequences" with
     | some v => (do let a ← v.getArr?; pure a.toList)
     | none => throw "base needs a \"consequences\" array"
-  cs.mapM fun e => do
+  let language ← match field? j "language" with
+    | none | some Json.null => pure none
+    | some v => some <$> strList v
+  let entries ← cs.mapM fun e => do
     let ant ← strList (← e.getObjVal? "antecedent")
     let con ← strList (← e.getObjVal? "consequent")
     let rob ← parseRobustness (field? e "robustness")
-    pure { ant, con, rob }
+    pure ({ ant, con, rob } : Entry String)
+  let pb : ParsedBase := { entries, language }
+  for e in entries do
+    checkLanguage pb "the base" (e.ant ++ e.con)
+    if (entries.filter fun e' => setEqB e.ant e'.ant && setEqB e.con e'.con).length > 1 then
+      throw s!"the base lists the pair {repr e.ant} |~ {repr e.con} more than once"
+  pure pb
 
 /-- Number of premises the rule on `φ` (left side if `left`) has; `none` for an
 atom, which is no rule at all. Matches `NMMS.check`. -/
@@ -143,19 +261,46 @@ def ruleArity (left : Bool) : Formula String → Option Nat
   | .conj _ _ => some (if left then 1 else 3)
   | .disj _ _ => some (if left then 3 else 1)
 
+/-- A certificate node is an axiom leaf `{"ax": true}` with no other key, or
+a rule node with "side" "L" or "R", "principal", "premises" and optional
+"keep"; any other object is refused (see the header). -/
 partial def parseCert (j : Json) : Except String (Cert String) := do
-  if (field? j "ax").isSome then return .ax
-  let side ← (← j.getObjVal? "side").getStr?
+  let .obj kvs := j | throw s!"a certificate node must be an object: {j.compress}"
+  if let some v := field? j "ax" then
+    if v != Json.bool true then throw s!"\"ax\" must be true, got {v.compress}"
+    if kvs.keys.contains "side" then
+      throw "a certificate node has \"ax\" or \"side\", not both"
+    if kvs.size != 1 then
+      throw s!"an \"ax\" leaf has no other keys: {j.compress}"
+    return .ax
+  if let some k := kvs.keys.find? (fun k => !["side", "principal", "keep", "premises"].contains k) then
+    throw s!"unknown key {k} in a certificate node"
+  let side ← match field? j "side" with
+    | some (.str "L") => pure "L"
+    | some (.str "R") => pure "R"
+    | some v => throw s!"certificate side must be \"L\" or \"R\", got {v.compress}"
+    | none => throw "a certificate node needs \"ax\": true or a \"side\""
   let φ ← parseFormula (← j.getObjVal? "principal")
+  let keep ← match field? j "keep" with
+    | none => pure false
+    | some (Json.bool b) => pure b
+    | some _ => throw "keep must be a boolean"
   let ps ← (← j.getObjVal? "premises").getArr?
   let cs ← ps.toList.mapM parseCert
-  if let some n := ruleArity (side == "L") φ then
+  match ruleArity (side == "L") φ with
+  | some n =>
     if cs.length != n then
       throw s!"certificate node needs {n} premises, got {cs.length}"
+  | none => throw "the principal of a rule node must be a complex sentence (an atom has no rule)"
   let c1 := cs.getD 0 .ax
   let c2 := cs.getD 1 .ax
   let c3 := cs.getD 2 .ax
-  return .node (side == "L") φ c1 c2 c3
+  return .node (side == "L") φ keep c1 c2 c3
+
+/-- Every formula a certificate names. -/
+def certFormulas : Cert String → List (Formula String)
+  | .ax => []
+  | .node _ φ _ c1 c2 c3 => φ :: (certFormulas c1 ++ certFormulas c2 ++ certFormulas c3)
 
 def parseStep (j : Json) : Except String (DerivationStep String) := do
   let ps ← (← j.getObjVal? "premises").getArr?
@@ -213,19 +358,24 @@ def handleClosure (j : Json) (id : Json) : Except String Json := do
     ("base", ← j.getObjVal? "base"), ("initial_premises", ← j.getObjVal? "initial_premises"),
     ("claim", ← j.getObjVal? "claim")]
   let expected ← NMMS.Wire.digest bound
-  let reply (accepted : Bool) (derivable : Json) (reason : Option String) : Json :=
+  let reply (accepted : Bool) (inClosure : Json) (reason : Option String) : Json :=
     Json.mkObj ([("id", id), ("request_hash", given), ("accepted", Json.bool accepted),
-      ("derivable", derivable)] ++ (match reason with
+      ("in_closure", inClosure)] ++ (match reason with
         | some r => [("reason", Json.str r)]
         | none => []))
   if given != Json.str expected then
     return reply false Json.null (some "request_hash does not match the canonical hash of op, base, initial_premises and claim")
-  let B ← parseBase (← j.getObjVal? "base")
+  let pb ← parseBase (← j.getObjVal? "base")
+  let B := pb.entries
   let initial ← (← (← j.getObjVal? "initial_premises").getArr?).toList.mapM parseFormula
   let claim ← parseFormula (← j.getObjVal? "claim")
   let cj ← j.getObjVal? "certificate"
   let kind ← (← cj.getObjVal? "kind").getStr?
   let steps ← (← (← cj.getObjVal? "steps").getArr?).toList.mapM parseStep
+  checkFormulas pb "the initial premises" initial
+  checkFormulas pb "the claim" [claim]
+  checkFormulas pb "the certificate"
+    (steps.flatMap fun s => s.conclusion :: s.premises ++ certFormulas s.cert)
   match kind with
   | "derivation" =>
     if checkDerivation B initial steps claim then
@@ -233,16 +383,30 @@ def handleClosure (j : Json) (id : Json) : Except String Json := do
     else return reply false Json.null (some (rejectReason B initial steps claim))
   | "closure-refutation" =>
     let closure ← strList (← cj.getObjVal? "closure")
+    checkLanguage pb "the listed closure" closure
     let cert : ClosureRefutation String := { steps, closure }
     if checkRefutation B initial cert claim then
       return reply true (Json.bool false) none
     else return reply false Json.null (some (refutationReason B initial cert claim))
   | k => throw s!"unknown certificate kind {k}"
 
-def handle (line : String) : Json :=
+/-- The number of object members in a parsed value. `Json.parse` keeps only
+the last value of a repeated key, so this is smaller than the line's own
+count (`prescan`) exactly when some object repeats a key. -/
+partial def jsonMembers : Json → Nat
+  | .obj kvs => kvs.toList.foldl (fun acc (_, v) => acc + 1 + jsonMembers v) 0
+  | .arr a => a.foldl (fun acc v => acc + jsonMembers v) 0
+  | _ => 0
+
+/-- Answer one line, given the number of object members `prescan` counted in
+it (a repeated key is refused rather than read by its last value). -/
+def handle (line : String) (members : Nat) : Json :=
   match Json.parse line with
   | .error e => Json.mkObj [("error", Json.str s!"bad JSON: {e}")]
   | .ok j =>
+    if jsonMembers j != members then
+      Json.mkObj [("error", Json.str "a JSON object repeats a key")]
+    else
     let id := (field? j "id").getD Json.null
     let r : Except String Json := do
       if let some op := field? j "op" then
@@ -250,10 +414,11 @@ def handle (line : String) : Json :=
         | Json.str "closure" => return ← handleClosure j id
         | Json.str "score" => return ← handleScore j id
         | v => throw s!"unknown op {v.compress}"
-      let B ← parseBase (← j.getObjVal? "base")
+      let pb ← parseBase (← j.getObjVal? "base")
       let Γ ← (← (← j.getObjVal? "antecedent").getArr?).toList.mapM parseFormula
       let Δ ← (← (← j.getObjVal? "consequent").getArr?).toList.mapM parseFormula
-      let R := baseRel B
+      checkFormulas pb "the sequent" (Γ ++ Δ)
+      let R := baseRel pb.entries
       let backtracking ← match field? j "engine" with
         | none | some Json.null => pure false
         | some (Json.str "fast") => pure false
@@ -268,38 +433,95 @@ def handle (line : String) : Json :=
       let certOk : Json ← match field? j "cert" with
         | none => pure Json.null
         | some Json.null => pure Json.null
-        | some cj => do let c ← parseCert cj; pure (Json.bool (check R c Γ Δ))
+        | some cj => do
+          let c ← parseCert cj
+          checkFormulas pb "the certificate" (certFormulas c)
+          pure (Json.bool (check R c Γ Δ))
       pure (Json.mkObj [("id", id), ("derivable", Json.bool d), ("cert_ok", certOk),
         ("refute_ok", refOk), ("refute_len", refLen)])
     match r with
     | .ok out => out
     | .error e => Json.mkObj [("id", id), ("error", Json.str e)]
 
-/-- Resource limits (see the header). -/
+/-- Resource limits: `--max-line-bytes` (default 4 MiB; a longer line gets
+`{"error": "line longer than --max-line-bytes N"}` once its newline arrives)
+and `--max-depth` (default 256 levels of `{`/`[`, checked by `prescan` before
+`Json.parse`). -/
 structure Limits where
   maxLineBytes : Nat := 4194304
   maxDepth : Nat := 256
 
-/-- Deepest `{`/`[` nesting of a raw line, counted without parsing it (string
-contents and escapes are skipped), stopping as soon as `cap` is exceeded, so
-this costs at most one pass and constant memory. Run before `Json.parse`,
-whose recursion would otherwise follow the nesting. -/
-def nestingExceeds (bytes : ByteArray) (cap : Nat) : Bool := Id.run do
+/-- The UTF-16 code unit of the escape `\uXXXX` whose backslash is at `i`
+(hex digits in either case), or `none` if the bytes there are not one. -/
+def unicodeEscapeAt (bytes : ByteArray) (i : Nat) : Option Nat := do
+  if bytes[i]? != some 92 || bytes[i + 1]? != some 117 then none
+  let digit (k : Nat) : Option Nat := do
+    let b ← bytes[i + 2 + k]?
+    if 48 ≤ b && b ≤ 57 then pure (b - 48).toNat
+    else if 65 ≤ b && b ≤ 70 then pure (b - 55).toNat
+    else if 97 ≤ b && b ≤ 102 then pure (b - 87).toNat
+    else none
+  return (← digit 0) * 4096 + (← digit 1) * 256 + (← digit 2) * 16 + (← digit 3)
+
+/-- Check a raw line before `Json.parse`, without parsing it, in one pass and
+constant memory: either the error to report or the number of object members
+the line has. Two checks: the deepest `{`/`[` nesting (string contents and
+escapes are skipped), stopping as soon as `cap` is exceeded, since
+`Json.parse`'s recursion would otherwise follow the nesting; and every `\u`
+escape inside a string, which must not be an unpaired UTF-16 surrogate (see
+the header): an escape in D800-DBFF must be immediately followed by one in
+DC00-DFFF, and the pair is consumed together. A number token (the bytes
+`0-9 + - . e E` outside a string; the `e` of `true`/`false` starts a
+harmless one-byte token) is refused if it is longer than 100 bytes or its
+exponent has more than two digits (see the header). In valid JSON every `:`
+outside a string separates one object member, so the count is the number of
+those; `handle` compares it with the parsed value to catch a repeated key. -/
+def prescan (bytes : ByteArray) (cap : Nat) : Except String Nat := Id.run do
+  let unpaired (c : Nat) : String :=
+    s!"unpaired UTF-16 surrogate escape \\u{(String.ofList (Nat.toDigits 16 c)).toUpper} in a JSON string"
   let mut depth := 0
+  let mut members := 0
+  let mut numLen := 0     -- bytes of the current number token
+  let mut inExp := false  -- past its `e`/`E`
+  let mut expDigits := 0
   let mut inStr := false
-  let mut esc := false
-  for b in bytes do
+  let mut skip := 0  -- bytes of the current escape still to pass over
+  for i in [0:bytes.size] do
+    if skip > 0 then
+      skip := skip - 1
+      continue
+    let b := bytes[i]!
+    if !inStr && ((48 ≤ b && b ≤ 57) || b == 43 || b == 45 || b == 46 || b == 101 || b == 69) then
+      numLen := numLen + 1
+      if b == 101 || b == 69 then
+        inExp := true
+        expDigits := 0
+      else if inExp && 48 ≤ b && b ≤ 57 then expDigits := expDigits + 1
+      if numLen > 100 || expDigits > 2 then
+        return .error "a number longer than 100 characters or with an exponent of more than two digits"
+      continue
+    numLen := 0
+    inExp := false
+    expDigits := 0
     if inStr then
-      if esc then esc := false
-      else if b == 92 then esc := true
+      if b == 92 then
+        match unicodeEscapeAt bytes i with
+        | none => skip := 1
+        | some c =>
+          if c < 0xD800 || c > 0xDFFF then skip := 5
+          else if c ≥ 0xDC00 then return .error (unpaired c)
+          else match unicodeEscapeAt bytes (i + 6) with
+            | some d => if 0xDC00 ≤ d && d ≤ 0xDFFF then skip := 11 else return .error (unpaired c)
+            | none => return .error (unpaired c)
       else if b == 34 then inStr := false
     else if b == 34 then inStr := true
+    else if b == 58 then members := members + 1
     else if b == 123 || b == 91 then
       depth := depth + 1
-      if depth > cap then return true
+      if depth > cap then return .error s!"nesting deeper than --max-depth {cap}"
     else if b == 125 || b == 93 then
       depth := depth - 1
-  return false
+  return .ok members
 
 def errLine (msg : String) : Json := Json.mkObj [("error", Json.str msg)]
 
@@ -310,9 +532,9 @@ def answerLine (lim : Limits) (bytes : ByteArray) : Option Json :=
   | some line =>
     let t := line.trimAscii.toString
     if t.isEmpty then none
-    else if nestingExceeds t.toUTF8 lim.maxDepth then
-      some (errLine s!"nesting deeper than --max-depth {lim.maxDepth}")
-    else some (handle t)
+    else match prescan t.toUTF8 lim.maxDepth with
+      | .error e => some (errLine e)
+      | .ok members => some (handle t members)
 
 /-- Read standard input a byte at a time (`Stream.read n` blocks until `n` bytes
 or end of input, which would deadlock an interactive caller waiting for an

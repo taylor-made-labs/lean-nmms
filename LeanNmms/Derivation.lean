@@ -4,6 +4,13 @@
   Certifying a whole chain of material inferences from initial premises, not
   only its last step (fix 2 of the 21 Oct 2026 adversarial review).
 
+  **This is not NMMS derivability.** NMMS has no Cut: `p ⇒ q` and `q ⇒ r`
+  being derivable does not make `p ⇒ r` derivable. `Closure` chains
+  single-conclusion NMMS steps, so membership of a claim in it is a further
+  calculation on top of NMMS, and `nmms-lean` reports it as `"in_closure"`,
+  never as `"derivable"`. Each *step* is NMMS-derivable over the base (checked
+  by the proved certificate checker); the chain is not a sequent derivation.
+
   **The closure.** `Closure B Γ₀ φ` is the least set of sentences that
   contains `Γ₀` and is closed under single-conclusion NMMS steps: if every
   member of some list `P` is in the set and `P ⇒ φ` is derivable over the base
@@ -34,9 +41,8 @@
   `checkRefutation_sound`: then the claim is **not** in `Closure B Γ₀`.
   The proof reads `A` as a classical valuation (`a` true iff `a ∈ A`): given
   saturation every base axiom is true under it, and every NMMS rule preserves
-  truth under one valuation (`valuation_sound`, the one-valuation form of
-  `emptyBase_sound`), so the whole closure is true and the claim, false, is
-  outside it. The check is conservative: an entry that concludes nothing (an
+  truth under one valuation (`valuation_sound`, `LeanNmms.Classical`), so the
+  whole closure is true and the claim, false, is outside it. The check is conservative: an entry that concludes nothing (an
   exclusion) with a reached antecedent, or one with several consequents none
   of them reached, fails saturation even where the claim may in fact be
   outside the closure; such cases are rejected, never certified.
@@ -118,110 +124,6 @@ theorem checkDerivation_sound {B : List (Entry α)} {initial : List (Formula α)
     exact checkSteps_sound B initial steps initial out (fun φ hφ => Closure.init hφ) e
       claim (List.contains_iff_mem.mp h)
   · simp at h
-
-/-! ### Truth under one valuation -/
-
-/-- Every NMMS rule preserves classical truth under a single valuation `v`;
-so does every base axiom, when the base is true under `v`. Hence every
-derivable sequent is true under `v`. (`emptyBase_sound` is the case of the
-empty base, for every valuation at once.) -/
-theorem valuation_sound (v : α → Bool) {R : BaseRel α}
-    (hR : ∀ X Y, R X Y = true → (∀ x ∈ X, v x = true) → ∃ y ∈ Y, v y = true)
-    {Γ Δ : List (Formula α)} (h : Derivable R Γ Δ) :
-    (∀ φ ∈ Γ, φ.eval v = true) → ∃ ψ ∈ Δ, ψ.eval v = true := by
-  induction h with
-  | ax _ _ hor =>
-    intro hv
-    rcases hor with ⟨a, h1, h2⟩ | hb
-    · exact ⟨atom a, h2, hv _ h1⟩
-    · obtain ⟨y, hy, hvy⟩ := hR _ _ hb (fun x hx => by
-        have := hv (atom x) (mem_atomsOf.mp hx); simpa [Formula.eval] using this)
-      exact ⟨atom y, mem_atomsOf.mp hy, by simp [Formula.eval, hvy]⟩
-  | @negL Γ Δ A hm _ ih =>
-    intro hv
-    have hn := hv _ hm
-    obtain ⟨ψ, hψ, ht⟩ := ih (fun x hx => hv x (mem_rest.mp hx).1)
-    rcases List.mem_cons.mp hψ with e | e
-    · subst e; simp [Formula.eval, ht] at hn
-    · exact ⟨ψ, e, ht⟩
-  | @implL Γ Δ A B hm _ _ _ ih1 ih2 _ =>
-    intro hv
-    have hi := hv _ hm
-    cases hA : A.eval v
-    · obtain ⟨ψ, hψ, ht⟩ := ih1 (fun x hx => hv x (mem_rest.mp hx).1)
-      rcases List.mem_cons.mp hψ with e | e
-      · subst e; rw [hA] at ht; cases ht
-      · exact ⟨ψ, e, ht⟩
-    · have hB : B.eval v = true := by simpa [Formula.eval, hA] using hi
-      exact ih2 (by
-        intro x hx
-        rcases List.mem_cons.mp hx with e | e
-        · subst e; exact hB
-        · exact hv x (mem_rest.mp e).1)
-  | @conjL Γ Δ A B hm _ ih =>
-    intro hv
-    have hc := hv _ hm
-    simp only [Formula.eval, Bool.and_eq_true] at hc
-    exact ih (by
-      intro x hx
-      simp only [List.mem_cons] at hx
-      rcases hx with e | e | e
-      · subst e; exact hc.1
-      · subst e; exact hc.2
-      · exact hv x (mem_rest.mp e).1)
-  | @disjL Γ Δ A B hm _ _ _ ih1 ih2 _ =>
-    intro hv
-    have hc := hv _ hm
-    simp only [Formula.eval, Bool.or_eq_true] at hc
-    rcases hc with hc | hc
-    · exact ih1 (by
-        intro x hx
-        rcases List.mem_cons.mp hx with e | e
-        · subst e; exact hc
-        · exact hv x (mem_rest.mp e).1)
-    · exact ih2 (by
-        intro x hx
-        rcases List.mem_cons.mp hx with e | e
-        · subst e; exact hc
-        · exact hv x (mem_rest.mp e).1)
-  | @negR Γ Δ A hm _ ih =>
-    intro hv
-    cases hA : A.eval v
-    · exact ⟨_, hm, by simp [Formula.eval, hA]⟩
-    · exact ex_of_rest (ih (by
-        intro x hx
-        rcases List.mem_cons.mp hx with e | e
-        · subst e; exact hA
-        · exact hv x e))
-  | @implR Γ Δ A B hm _ ih =>
-    intro hv
-    cases hA : A.eval v
-    · exact ⟨_, hm, by simp [Formula.eval, hA]⟩
-    · obtain ⟨ψ, hψ, ht⟩ := ih (by
-        intro x hx
-        rcases List.mem_cons.mp hx with e | e
-        · subst e; exact hA
-        · exact hv x e)
-      rcases List.mem_cons.mp hψ with e | e
-      · subst e; exact ⟨_, hm, by simp [Formula.eval, ht]⟩
-      · exact ⟨ψ, (mem_rest.mp e).1, ht⟩
-  | @conjR Γ Δ A B hm _ _ _ ih1 ih2 _ =>
-    intro hv
-    obtain ⟨ψ1, hψ1, ht1⟩ := ih1 hv
-    obtain ⟨ψ2, hψ2, ht2⟩ := ih2 hv
-    rcases List.mem_cons.mp hψ1 with e1 | e1
-    · rcases List.mem_cons.mp hψ2 with e2 | e2
-      · subst e1; subst e2; exact ⟨_, hm, by simp [Formula.eval, ht1, ht2]⟩
-      · exact ⟨ψ2, (mem_rest.mp e2).1, ht2⟩
-    · exact ⟨ψ1, (mem_rest.mp e1).1, ht1⟩
-  | @disjR Γ Δ A B hm _ ih =>
-    intro hv
-    obtain ⟨ψ, hψ, ht⟩ := ih hv
-    simp only [List.mem_cons] at hψ
-    rcases hψ with e | e | e
-    · subst e; exact ⟨_, hm, by simp [Formula.eval, ht]⟩
-    · subst e; exact ⟨_, hm, by simp [Formula.eval, ht]⟩
-    · exact ⟨ψ, (mem_rest.mp e).1, ht⟩
 
 /-! ### Closure refutations -/
 

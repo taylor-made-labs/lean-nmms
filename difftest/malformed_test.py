@@ -1,17 +1,40 @@
 """Regression test for the input hardening of `nmms-lean` (Main.lean).
 
 Stdlib only; runs the built binary with a list argv (no shell). Checks:
-  * 6 malformed or over-limit inputs each return an {"error": ...} line within
+  * 29 malformed or over-limit inputs each return an {"error": ...} line within
     5 seconds: a line over the byte cap, nesting over the depth cap (1,000,000
     nested `neg`), a base without "consequences", a wrong-typed field
     ("unless": 5), an unknown "engine", a certificate with the wrong number of
-    premises for its rule;
-  * 3 well-formed queries (same shape as the difftest corpus) still return
-    exactly the answers the binary gave before the hardening (captured from
-    the pre-change build).
+    premises for its rule; an unpaired UTF-16 surrogate escape, which
+    `Json.parse` would read as U+FFFD (a lone low one, also in upper-case hex
+    and after an escaped backslash; a lone high one; a high one followed by a
+    non-surrogate escape); robustness that pyNMMS refuses (defeaters on a
+    MONOTONE entry or on one with no "kind", "unless": 5 on a MONOTONE entry,
+    an empty exclusion pair); a formula object with two keys, a non-string
+    atom; a certificate with side "X", an {"ax": false} leaf, a node with both
+    "ax" and "side", a node with an unknown key, a "keep" of null, a rule
+    node on an atom; a repeated key, which `Json.parse` would read by its last
+    value (in a formula, in a certificate leaf, spelled with an escape); a
+    number with an exponent of more than two digits (positive or negative) or
+    longer than 100 characters, which `Json.parse` would build digit by digit;
+  * 3 well-formed queries (same shape as the difftest corpus) return exactly
+    the expected answers (captured from the pre-hardening build; the third
+    changed when Containment stopped being added: over the empty base
+    `p, q ⇒ q` is not an axiom, so `p ∧ q ⇒ q` is not derivable and its
+    certificate is rejected);
+  * 9 well-formed queries that the checks above must not refuse return
+    exactly the expected answers: an atom written as a surrogate-pair escape
+    (an emoji, which `json.dumps` sends as a high and a low escape; a
+    different emoji stays a different atom), an escaped backslash followed
+    by `udc80` (not an escape), robustness that pyNMMS accepts
+    ({"kind": "monotone", "unless": {}} and the plain string "monotone"), and
+    atoms containing ":" (also after an escaped quote), which the
+    repeated-key check counts only outside strings, a GUARDED defeater atom
+    outside the language (pyNMMS accepts it; it never fires), and numbers
+    within the bounds.
 
 Run (from anywhere, after `lake build`):  python3 -I difftest/malformed_test.py
-Exit status 0 only if all 9 checks pass.
+Exit status 0 only if all 41 checks pass.
 """
 
 import json
@@ -43,6 +66,23 @@ N = 1_000_000
 deep = "{\"neg\":" * N + "{\"atom\":\"p\"}" + "}" * N
 BIG = "100000000"  # lift the byte cap so the depth cap is what is tested
 
+
+def atom_query(base_atom, query_atom):
+    """`base_atom |~ q` (no language), asking `query_atom => q`."""
+    return query(base={"consequences": [{"antecedent": [base_atom], "consequent": ["q"]}]},
+                 antecedent=[{"atom": query_atom}])
+
+
+def rob_query(rob, antecedent=(P,)):
+    """`p |~ q` with this robustness, asking `antecedent => q`."""
+    return query(base={"language": ["p", "q", "r", "s"], "consequences": [
+        {"antecedent": ["p"], "consequent": ["q"], "robustness": rob}]},
+        antecedent=list(antecedent))
+
+
+BACKSLASH = "\\"
+UNPAIRED = "unpaired UTF-16 surrogate escape"
+
 error_cases = {
     "line over the byte cap": (
         query(id="x" * 3000), ["--max-line-bytes", "1000"]),
@@ -59,9 +99,70 @@ error_cases = {
     "certificate with wrong premises count": (
         query(antecedent=[CONJ], cert={"side": "L", "principal": CONJ, "premises": []}),
         []),
+    # json.dumps (ensure_ascii, the default) writes each lone surrogate as an escape.
+    "lone low surrogate escape": (atom_query("<\udc80>", "<\udc81>"), [], UNPAIRED),
+    "lone low surrogate escape in upper-case hex": (
+        atom_query("q", "<\udc81>").replace(BACKSLASH + "udc81", BACKSLASH + "uDC81"), [], UNPAIRED),
+    "lone low surrogate escape after an escaped backslash": (
+        atom_query("q", BACKSLASH + "\udc80"), [], UNPAIRED),
+    "lone high surrogate escape": (atom_query("<\ud800>", "<\ud801>"), [], UNPAIRED),
+    "high surrogate escape followed by a non-surrogate escape": (
+        atom_query("\ud800\xe9", "\ud800\xe8"), [], UNPAIRED),
+    "defeaters on a MONOTONE entry": (
+        rob_query({"kind": "monotone", "unless": {"antecedent": ["r"]}}, [P, {"atom": "r"}]), [],
+        "not monotone"),
+    'defeaters on an entry with no "kind" (EXACT)': (
+        rob_query({"unless": {"antecedent": ["r"]}}), [], "not exact"),
+    'MONOTONE entry with "unless": 5': (
+        rob_query({"kind": "monotone", "unless": 5}), [], "unless must be an object"),
+    "GUARDED entry with an empty exclusion pair": (
+        rob_query({"kind": "guarded", "unless": {"pairs": [{"antecedent": [], "consequent": []}]}}),
+        [], "at least one atom"),
+    "formula object with two keys": (
+        query(antecedent=[{"atom": "p", "neg": Q}]), [], "not a formula"),
+    "formula atom that is not a string": (
+        query(antecedent=[{"atom": 5}]), [], "atom must be a string"),
+    'certificate side "X"': (
+        query(antecedent=[CONJ], cert={"side": "X", "principal": CONJ, "premises": [{"ax": True}] * 3}),
+        [], 'side must be "L" or "R"'),
+    'certificate leaf {"ax": false}': (
+        query(antecedent=[CONJ], cert={"side": "L", "principal": CONJ, "premises": [{"ax": False}]}),
+        [], '"ax" must be true'),
+    'certificate node with both "ax" and "side"': (
+        query(antecedent=[CONJ], cert={"ax": True, "side": "L", "principal": CONJ,
+                                       "premises": [{"ax": True}]}), [], "not both"),
+    "certificate node with an unknown key": (
+        query(antecedent=[CONJ], cert={"side": "L", "principal": CONJ, "premises": [{"ax": True}],
+                                       "note": "x"}), [], "unknown key note"),
+    'certificate "keep": null': (
+        query(antecedent=[CONJ], cert={"side": "L", "principal": CONJ, "keep": None,
+                                       "premises": [{"ax": True}]}), [], "keep must be a boolean"),
+    "certificate rule node on an atom": (
+        query(cert={"side": "L", "principal": P, "premises": []}), [], "an atom has no rule"),
+    # json.dumps cannot repeat a key, so these lines are written out.
+    "repeated key in a formula": (
+        '{"id":1,"base":{"language":["p","q","r"],"consequences":[{"antecedent":["p"],'
+        '"consequent":["q"]}]},"antecedent":[{"atom":"r","atom":"p"}],"consequent":[{"atom":"q"}]}\n',
+        [], "repeats a key"),
+    "repeated key in a certificate leaf": (
+        '{"id":1,"base":{"language":["p","q"],"consequences":[{"antecedent":["p"],'
+        '"consequent":["q"]}]},"antecedent":[{"atom":"p"}],"consequent":[{"atom":"q"}],'
+        '"cert":{"ax":false,"ax":true}}\n', [], "repeats a key"),
+    "repeated key spelled with an escape": (
+        '{"id":1,"base":{"language":["p","q","r"],"consequences":[{"antecedent":["p"],'
+        '"consequent":["q"]}]},"antecedent":[{"atom":"r","\\u0061tom":"p"}],'
+        '"consequent":[{"atom":"q"}]}\n', [], "repeats a key"),
+    # Json.parse builds numbers digit by digit as big integers: each of these
+    # would take minutes or gigabytes.
+    "number with a long exponent (1e1000000)": (
+        '{"id":1e1000000}\n', [], "exponent of more than two digits"),
+    "number with a long negative exponent": (
+        query(id=1).replace('"id": 1', '"id": 1E-100'), [], "exponent of more than two digits"),
+    "number longer than 100 characters": (
+        query(id=int("1" * 101)), [], "longer than 100 characters"),
 }
 
-# Answers of the pre-hardening binary on these three corpus-shaped queries.
+# Expected answers on these three corpus-shaped queries (see the header).
 ok_cases = [
     (query(base={"language": ["p", "q", "r", "s"], "consequences": [
         {"antecedent": ["p"], "consequent": ["q"], "robustness": {"kind": "exact"}}]}),
@@ -73,14 +174,39 @@ ok_cases = [
            antecedent=[P, {"atom": "r"}]),
      {"cert_ok": None, "derivable": False, "id": 1, "refute_len": 0, "refute_ok": True}),
     (query(antecedent=[CONJ], cert={"side": "L", "principal": CONJ, "premises": [{"ax": True}]}),
-     {"cert_ok": True, "derivable": True, "id": 1, "refute_len": None, "refute_ok": None}),
+     {"cert_ok": False, "derivable": False, "id": 1, "refute_len": 1, "refute_ok": True}),
 ]
 
+# Well-formed inputs next to the refusals above, which must still be answered.
+DERIVABLE = {"cert_ok": None, "derivable": True, "id": 1, "refute_len": None, "refute_ok": None}
+UNDERIVABLE = {"cert_ok": None, "derivable": False, "id": 1, "refute_len": 0, "refute_ok": True}
+accepted_cases = {
+    "surrogate-pair escape: the same emoji": (
+        atom_query("\U0001F600", "\U0001F600"), DERIVABLE),
+    "surrogate-pair escape: another emoji is another atom": (
+        atom_query("\U0001F600", "\U0001F601"), UNDERIVABLE),
+    "escaped backslash then udc80 (not an escape)": (
+        atom_query(BACKSLASH + "udc80", BACKSLASH + "udc80"), DERIVABLE),
+    '{"kind": "monotone", "unless": {}} (pyNMMS accepts it)': (
+        rob_query({"kind": "monotone", "unless": {}}, [P, {"atom": "r"}]), DERIVABLE),
+    'robustness "monotone" as a plain string (pyNMMS accepts it)': (
+        rob_query("monotone", [P, {"atom": "r"}]), DERIVABLE),
+    'an atom containing ":"': (atom_query("a:b", "a:b"), DERIVABLE),
+    'an atom containing an escaped quote and ":"': (atom_query('a":b', 'a":b'), DERIVABLE),
+    # pyNMMS accepts a defeater atom outside L_B (its to_dict keeps it there);
+    # no query may mention it, so it never fires.
+    "a GUARDED defeater atom outside the language": (
+        rob_query({"kind": "guarded", "unless": {"antecedent": ["zzz"]}}), DERIVABLE),
+    "numbers within the bounds (id -1.5e-10, true/false/null elsewhere)": (
+        query(id=1).replace('"id": 1', '"id": -1.5e-10, "engine": null, "x": [true, false]'),
+        {**UNDERIVABLE, "id": -1.5e-10}),
+}
+
 passed = failed = 0
-for name, (text, args) in error_cases.items():
+for name, (text, args, *reason) in error_cases.items():
     try:
         out = run(text, args)
-        good = len(out) == 1 and "error" in out[0]
+        good = len(out) == 1 and "error" in out[0] and all(r in out[0]["error"] for r in reason)
     except subprocess.TimeoutExpired:
         out, good = "timeout", False
     print(("PASS" if good else "FAIL"), "error:", name, "" if good else out)
@@ -92,6 +218,14 @@ for i, (text, want) in enumerate(ok_cases, 1):
     except subprocess.TimeoutExpired:
         out, good = "timeout", False
     print(("PASS" if good else "FAIL"), f"unchanged answer {i}", "" if good else out)
+    passed, failed = (passed + 1, failed) if good else (passed, failed + 1)
+for name, (text, want) in accepted_cases.items():
+    try:
+        out = run(text)
+        good = out == [want]
+    except subprocess.TimeoutExpired:
+        out, good = "timeout", False
+    print(("PASS" if good else "FAIL"), "accepted:", name, "" if good else out)
     passed, failed = (passed + 1, failed) if good else (passed, failed + 1)
 print(f"{passed} of {passed + failed} passed")
 sys.exit(1 if failed else 0)

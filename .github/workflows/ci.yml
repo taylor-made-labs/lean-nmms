@@ -36,6 +36,7 @@ jobs:
           lake env lean Axioms.lean
           lake env lean tests/FixesDerivation.lean
           lake env lean tests/FixesGround.lean
+          lake env lean tests/NmmsRules.lean
           lake env lean tests/AllConstantsAxioms.lean | tee axioms.out
           grep -q 'FIXES_AXIOMS_OK' axioms.out
 
@@ -45,9 +46,15 @@ jobs:
       - name: Python-driven Lean tests
         run: python3 -B -m unittest -v tests.test_fixes_lean
 
+      - name: NMMS rule regression tests (against the stdlib reference implementation)
+        run: python3 -B -m unittest -v tests.test_nmms_rules
+
   differential:
     # Compares the built executable with pyNMMS 0.15.1 (pinned, hash-checked
-    # in difftest/requirements.txt) on generated cases.
+    # in difftest/requirements.txt) on generated cases: pyNMMS over a base
+    # against Lean over that base plus Containment (pyNMMS adds Containment),
+    # Lean over the base itself against difftest/nmms_reference.py, and rule
+    # invertibility of NMMS over the base (by Lean) and of pyNMMS.
     needs: lean
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -71,6 +78,8 @@ jobs:
           import json
           s = json.load(open("diff.out"))
           bad = {k: s[k] for k in ("disagree", "cache_disagree", "parse_mismatch", "lean_error",
-                                   "certs_rejected", "refute_rejected", "lean_timeout") if s[k]}
+                                   "certs_rejected", "certs_missing", "refute_rejected",
+                                   "refute_missing", "nmms_invert_fail", "pynmms_invert_fail",
+                                   "ref_disagree", "lean_timeout") if s[k]}
           assert not bad, bad
           PY

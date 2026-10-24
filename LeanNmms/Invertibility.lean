@@ -1,9 +1,9 @@
 /-
   LeanNmms.Invertibility
 
-  Proof of `NMMS.Invertibility` (the book's Prop. 27 for the calculus as
-  pyNMMS implements it), by characterizing derivability through the leaves of
-  a complete decomposition.
+  Proof of `NMMS.Invertibility` (the book's Prop. 27, as reported), by
+  characterizing derivability through the leaves of a complete
+  decomposition.
 
   Why this route. Permuting rules inside a derivation needs an absorption
   lemma for every pair of rules, because a sentence removed by one rule can
@@ -14,16 +14,20 @@
     right. Atom lists are read as sets, and every relation used is closed
     under set equality.
   * `Leaves Γ Δ X Y`: one contribution from every member of each side,
-    combined. `LeafValid R Γ Δ`: every leaf is an axiom (shared atom, or in the
-    base).
+    combined. `LeafValid R Γ Δ`: every leaf is in the base. Only the base
+    counts: a leaf whose sides share an atom is not an axiom unless the base
+    contains it.
   * `C_uc` is the single absorption lemma: contributions are closed under
     union. That holds because of the third premises (L∨, R∧, L→ allow both
     parts at once). So a sentence that occurs twice contributes exactly what
-    it contributes once, which is what each pairwise absorption lemma needed.
+    it contributes once (`S_congr`: the leaves depend only on the sets).
+    This is also why the book's rule instances whose context keeps the
+    principal sentence change nothing.
   * Each rule's conclusion has exactly the leaves of its premises together
-    (`*_sem` lemmas), so `derivable_iff_valid` holds: soundness by induction
-    on derivations, completeness by the connective-count measure
-    (`derivable_of_preserved`). Invertibility follows immediately.
+    (`*_sem` lemmas, for any context), so `derivable_iff_valid` holds:
+    soundness by induction on derivations, completeness by the
+    connective-count measure (`derivable_of_preserved`). Invertibility
+    follows immediately.
 -/
 import LeanNmms.Open
 import LeanNmms.Containment
@@ -35,12 +39,6 @@ open Formula
 variable {α : Type} [DecidableEq α]
 
 /-! ### Set equality of atom lists -/
-
-theorem SetEq.rfl' {β : Type} {l : List β} : SetEq l l := fun _ => Iff.rfl
-theorem SetEq.symm {β : Type} {l l' : List β} (h : SetEq l l') : SetEq l' l :=
-  fun x => (h x).symm
-theorem SetEq.trans {β : Type} {a b c : List β} (h1 : SetEq a b) (h2 : SetEq b c) :
-    SetEq a c := fun x => (h1 x).trans (h2 x)
 
 /-- Closes set-equality goals between appends of lists, using the set-equality
 hypotheses in context. -/
@@ -94,13 +92,13 @@ def S (s : Bool) : List (Formula α) → Rel2 α
 /-- The leaves of a complete decomposition of `Γ ⇒ Δ`. -/
 def Leaves (Γ Δ : List (Formula α)) : Rel2 α := Prod2 (S true Γ) (S false Δ)
 
-/-- An atomic sequent that is an axiom: a shared atom, or in the base. -/
-def AxA (R : BaseRel α) : Rel2 α := fun X Y => (∃ a, a ∈ X ∧ a ∈ Y) ∨ R X Y = true
+/-- An atomic sequent that is an axiom: one in the base. -/
+def AxA (R : BaseRel α) : Rel2 α := fun X Y => R X Y = true
 
 /-- Every member of `P` is an axiom. -/
 def AllAx (R : BaseRel α) (P : Rel2 α) : Prop := ∀ X Y, P X Y → AxA R X Y
 
-/-- Every leaf of `Γ ⇒ Δ` is an axiom. -/
+/-- Every leaf of `Γ ⇒ Δ` is in the base. -/
 def LeafValid (R : BaseRel α) (Γ Δ : List (Formula α)) : Prop := AllAx R (Leaves Γ Δ)
 
 /-! ### Closure under set equality -/
@@ -260,24 +258,59 @@ theorem S_mem (s : Bool) (φ : Formula α) : ∀ (l : List (Formula α)), φ ∈
       rw [rest_cons_ne hx]
       exact (Prod2_congr PEq.rfl' (S_mem s φ l hl)).trans Prod2_swap
 
+
+theorem length_rest_lt {φ : Formula α} {l : List (Formula α)} (h : φ ∈ l) :
+    (rest l φ).length < l.length := by
+  induction l with
+  | nil => simp at h
+  | cons x l ih =>
+    by_cases hx : x = φ
+    · subst hx
+      rw [rest_cons_self]
+      have : (rest l x).length ≤ l.length := List.length_filter_le _ _
+      simp only [List.length_cons]; omega
+    · rw [rest_cons_ne hx]
+      have hl : φ ∈ l := by
+        rcases List.mem_cons.mp h with h | h
+        · exact absurd h.symm hx
+        · exact h
+      simp only [List.length_cons]; have := ih hl; omega
+
+/-- **The leaves depend only on the sets**: a side's contributions are the same
+for any two lists with the same members (absorption, via `S_mem`). -/
+theorem S_congr (s : Bool) : ∀ (n : Nat) (l l' : List (Formula α)), l.length < n →
+    SetEq l l' → PEq (S s l) (S s l')
+  | 0, _, _, h, _ => absurd h (Nat.not_lt_zero _)
+  | _ + 1, [], l', _, e => by
+    cases l' with
+    | nil => exact PEq.rfl'
+    | cons x t => exact absurd ((e x).mpr (List.mem_cons_self ..)) (by simp)
+  | n + 1, x :: t, l', hl, e => by
+    have hx : x ∈ x :: t := List.mem_cons_self ..
+    have hx' : x ∈ l' := (e x).mp hx
+    have hlen := length_rest_lt hx
+    have ih := S_congr s n (rest (x :: t) x) (rest l' x) (by simp at hl hlen ⊢; omega) (e.rest x)
+    exact (S_mem s x (x :: t) hx).trans ((Prod2_congr PEq.rfl' ih).trans (S_mem s x l' hx').symm)
+
+theorem Leaves_congr {Γ Γ' Δ Δ' : List (Formula α)} (e1 : SetEq Γ Γ') (e2 : SetEq Δ Δ') :
+    PEq (Leaves Γ Δ) (Leaves Γ' Δ') :=
+  Prod2_congr (S_congr true _ Γ Γ' (Nat.lt_succ_self _) e1)
+    (S_congr false _ Δ Δ' (Nat.lt_succ_self _) e2)
+
 theorem Leaves_consL (A : Formula α) (Γ Δ : List (Formula α)) :
     PEq (Leaves (A :: Γ) Δ) (Prod2 (C true A) (Leaves Γ Δ)) := Prod2_assoc
 
 theorem Leaves_consR (A : Formula α) (Γ Δ : List (Formula α)) :
     PEq (Leaves Γ (A :: Δ)) (Prod2 (C false A) (Leaves Γ Δ)) := Prod2_swap
 
-theorem Leaves_memL {φ : Formula α} {Γ : List (Formula α)} (h : φ ∈ Γ) (Δ : List (Formula α)) :
-    PEq (Leaves Γ Δ) (Prod2 (C true φ) (Leaves (rest Γ φ) Δ)) :=
-  (Prod2_congr (S_mem true φ Γ h) PEq.rfl').trans Prod2_assoc
-
-theorem Leaves_memR {φ : Formula α} {Δ : List (Formula α)} (h : φ ∈ Δ) (Γ : List (Formula α)) :
-    PEq (Leaves Γ Δ) (Prod2 (C false φ) (Leaves Γ (rest Δ φ))) :=
-  (Prod2_congr PEq.rfl' (S_mem false φ Δ h)).trans Prod2_swap
-
 /-! ### Every rule is an equivalence on leaves -/
 
 theorem AllAx_congr {R : BaseRel α} {P Q : Rel2 α} (h : PEq P Q) : AllAx R P ↔ AllAx R Q :=
   ⟨fun hp X Y q => hp X Y ((h X Y).mpr q), fun hq X Y p => hq X Y ((h X Y).mp p)⟩
+
+theorem LeafValid_congr {R : BaseRel α} {Γ Γ' Δ Δ' : List (Formula α)} (e1 : SetEq Γ Γ')
+    (e2 : SetEq Δ Δ') : LeafValid R Γ Δ ↔ LeafValid R Γ' Δ' :=
+  AllAx_congr (Leaves_congr e1 e2)
 
 theorem AllAx_or3 {R : BaseRel α} {P Q T : Rel2 α} :
     AllAx R (fun X Y => P X Y ∨ Q X Y ∨ T X Y) ↔ AllAx R P ∧ AllAx R Q ∧ AllAx R T := by
@@ -302,43 +335,53 @@ theorem opt_sem {R : BaseRel α} {S0 S1 S2 S3 P Q K : Rel2 α} (h0 : PEq S0 (Pro
 
 variable {R : BaseRel α} {Γ Δ : List (Formula α)} {A B : Formula α}
 
-theorem negL_sem (h : neg A ∈ Γ) : LeafValid R Γ Δ ↔ LeafValid R (rest Γ (neg A)) (A :: Δ) :=
-  one_sem (Leaves_memL h Δ) (Leaves_consR A _ _)
+/-! The book's form: the context `Γ` is arbitrary (it may contain the
+principal sentence). -/
 
-theorem implL_sem (h : impl A B ∈ Γ) : LeafValid R Γ Δ ↔
-    LeafValid R (rest Γ (impl A B)) (A :: Δ) ∧ LeafValid R (B :: rest Γ (impl A B)) Δ ∧
-    LeafValid R (B :: rest Γ (impl A B)) (A :: Δ) :=
-  opt_sem (P := C false A) (Q := C true B) (Leaves_memL h Δ) (Leaves_consR A _ _)
+theorem negL_sem : LeafValid R (neg A :: Γ) Δ ↔ LeafValid R Γ (A :: Δ) :=
+  one_sem (Leaves_consL (neg A) Γ Δ) (Leaves_consR A _ _)
+
+theorem implL_sem : LeafValid R (impl A B :: Γ) Δ ↔
+    LeafValid R Γ (A :: Δ) ∧ LeafValid R (B :: Γ) Δ ∧ LeafValid R (B :: Γ) (A :: Δ) :=
+  opt_sem (P := C false A) (Q := C true B) (Leaves_consL (impl A B) Γ Δ) (Leaves_consR A _ _)
     (Leaves_consL B _ _)
     ((Leaves_consL B _ _).trans ((Prod2_congr PEq.rfl' (Leaves_consR A _ _)).trans Prod2_swap))
 
-theorem conjL_sem (h : conj A B ∈ Γ) : LeafValid R Γ Δ ↔ LeafValid R (A :: B :: rest Γ (conj A B)) Δ :=
-  one_sem ((Leaves_memL h Δ).trans Prod2_assoc)
+theorem conjL_sem : LeafValid R (conj A B :: Γ) Δ ↔ LeafValid R (A :: B :: Γ) Δ :=
+  one_sem ((Leaves_consL (conj A B) Γ Δ).trans Prod2_assoc)
     ((Leaves_consL A _ _).trans (Prod2_congr PEq.rfl' (Leaves_consL B _ _)))
 
-theorem disjL_sem (h : disj A B ∈ Γ) : LeafValid R Γ Δ ↔
-    LeafValid R (A :: rest Γ (disj A B)) Δ ∧ LeafValid R (B :: rest Γ (disj A B)) Δ ∧
-    LeafValid R (A :: B :: rest Γ (disj A B)) Δ :=
-  opt_sem (P := C true A) (Q := C true B) (Leaves_memL h Δ) (Leaves_consL A _ _)
+theorem disjL_sem : LeafValid R (disj A B :: Γ) Δ ↔
+    LeafValid R (A :: Γ) Δ ∧ LeafValid R (B :: Γ) Δ ∧ LeafValid R (A :: B :: Γ) Δ :=
+  opt_sem (P := C true A) (Q := C true B) (Leaves_consL (disj A B) Γ Δ) (Leaves_consL A _ _)
     (Leaves_consL B _ _) ((Leaves_consL A _ _).trans (Prod2_congr PEq.rfl' (Leaves_consL B _ _)))
 
-theorem negR_sem (h : neg A ∈ Δ) : LeafValid R Γ Δ ↔ LeafValid R (A :: Γ) (rest Δ (neg A)) :=
-  one_sem (Leaves_memR h Γ) (Leaves_consL A _ _)
+theorem negR_sem : LeafValid R Γ (neg A :: Δ) ↔ LeafValid R (A :: Γ) Δ :=
+  one_sem (Leaves_consR (neg A) Γ Δ) (Leaves_consL A _ _)
 
-theorem implR_sem (h : impl A B ∈ Δ) :
-    LeafValid R Γ Δ ↔ LeafValid R (A :: Γ) (B :: rest Δ (impl A B)) :=
-  one_sem ((Leaves_memR h Γ).trans Prod2_assoc)
+theorem implR_sem : LeafValid R Γ (impl A B :: Δ) ↔ LeafValid R (A :: Γ) (B :: Δ) :=
+  one_sem ((Leaves_consR (impl A B) Γ Δ).trans Prod2_assoc)
     ((Leaves_consL A _ _).trans (Prod2_congr PEq.rfl' (Leaves_consR B _ _)))
 
-theorem conjR_sem (h : conj A B ∈ Δ) : LeafValid R Γ Δ ↔
-    LeafValid R Γ (A :: rest Δ (conj A B)) ∧ LeafValid R Γ (B :: rest Δ (conj A B)) ∧
-    LeafValid R Γ (A :: B :: rest Δ (conj A B)) :=
-  opt_sem (P := C false A) (Q := C false B) (Leaves_memR h Γ) (Leaves_consR A _ _)
+theorem conjR_sem : LeafValid R Γ (conj A B :: Δ) ↔
+    LeafValid R Γ (A :: Δ) ∧ LeafValid R Γ (B :: Δ) ∧ LeafValid R Γ (A :: B :: Δ) :=
+  opt_sem (P := C false A) (Q := C false B) (Leaves_consR (conj A B) Γ Δ) (Leaves_consR A _ _)
     (Leaves_consR B _ _) ((Leaves_consR A _ _).trans (Prod2_congr PEq.rfl' (Leaves_consR B _ _)))
 
-theorem disjR_sem (h : disj A B ∈ Δ) : LeafValid R Γ Δ ↔ LeafValid R Γ (A :: B :: rest Δ (disj A B)) :=
-  one_sem ((Leaves_memR h Γ).trans Prod2_assoc)
+theorem disjR_sem : LeafValid R Γ (disj A B :: Δ) ↔ LeafValid R Γ (A :: B :: Δ) :=
+  one_sem ((Leaves_consR (disj A B) Γ Δ).trans Prod2_assoc)
     ((Leaves_consR A _ _).trans (Prod2_congr PEq.rfl' (Leaves_consR B _ _)))
+
+/-! The form the decision procedures use: the principal sentence is a member
+of its side and is removed from the context. -/
+
+theorem memL_sem {φ : Formula α} (h : φ ∈ Γ) {T : Prop}
+    (hs : LeafValid R (φ :: rest Γ φ) Δ ↔ T) : LeafValid R Γ Δ ↔ T :=
+  (LeafValid_congr (setEq_cons_rest h) SetEq.rfl').trans hs
+
+theorem memR_sem {φ : Formula α} (h : φ ∈ Δ) {T : Prop}
+    (hs : LeafValid R Γ (φ :: rest Δ φ) ↔ T) : LeafValid R Γ Δ ↔ T :=
+  (LeafValid_congr SetEq.rfl' (setEq_cons_rest h)).trans hs
 
 /-! ### Atomic sequents -/
 
@@ -385,73 +428,102 @@ theorem S_false_atomic_inv : ∀ (l : List (Formula α)), allAtomic l = true →
 
 /-! ### Derivability is validity of the leaves -/
 
-/-- Soundness of the leaf semantics: a derivable sequent has only axiomatic
-leaves. -/
+/-- Soundness of the leaf semantics: a derivable sequent has only leaves in
+the base. -/
 theorem valid_of_derivable (hR : R.SetInvariant) (h : Derivable R Γ Δ) : LeafValid R Γ Δ := by
   induction h with
-  | @ax Γ Δ hg hd hor =>
+  | @ax Γ Δ hg hd hb =>
     intro X Y ⟨X1, Y1, X2, Y2, h1, h2, hx, hy⟩
     obtain ⟨e1, e2⟩ := S_true_atomic_inv Γ hg X1 Y1 h1
     obtain ⟨e3, e4⟩ := S_false_atomic_inv Δ hd X2 Y2 h2
     have ex : SetEq X (atomsOf Γ) := by seteq
     have ey : SetEq Y (atomsOf Δ) := by seteq
-    rcases hor with ⟨a, h1, h2⟩ | hb
-    · exact Or.inl ⟨a, (ex a).mpr (mem_atomsOf.mpr h1), (ey a).mpr (mem_atomsOf.mpr h2)⟩
-    · right; rw [hR _ _ _ _ ex ey]; exact hb
-  | negL hm _ ih => exact (negL_sem hm).mpr ih
-  | implL hm _ _ _ ih1 ih2 ih3 => exact (implL_sem hm).mpr ⟨ih1, ih2, ih3⟩
-  | conjL hm _ ih => exact (conjL_sem hm).mpr ih
-  | disjL hm _ _ _ ih1 ih2 ih3 => exact (disjL_sem hm).mpr ⟨ih1, ih2, ih3⟩
-  | negR hm _ ih => exact (negR_sem hm).mpr ih
-  | implR hm _ ih => exact (implR_sem hm).mpr ih
-  | conjR hm _ _ _ ih1 ih2 ih3 => exact (conjR_sem hm).mpr ⟨ih1, ih2, ih3⟩
-  | disjR hm _ ih => exact (disjR_sem hm).mpr ih
+    show R X Y = true
+    rw [hR _ _ _ _ ex ey]; exact hb
+  | negL e _ ih => exact (LeafValid_congr e SetEq.rfl').mpr (negL_sem.mpr ih)
+  | implL e _ _ _ ih1 ih2 ih3 =>
+    exact (LeafValid_congr e SetEq.rfl').mpr (implL_sem.mpr ⟨ih1, ih2, ih3⟩)
+  | conjL e _ ih => exact (LeafValid_congr e SetEq.rfl').mpr (conjL_sem.mpr ih)
+  | disjL e _ _ _ ih1 ih2 ih3 =>
+    exact (LeafValid_congr e SetEq.rfl').mpr (disjL_sem.mpr ⟨ih1, ih2, ih3⟩)
+  | negR e _ ih => exact (LeafValid_congr SetEq.rfl' e).mpr (negR_sem.mpr ih)
+  | implR e _ ih => exact (LeafValid_congr SetEq.rfl' e).mpr (implR_sem.mpr ih)
+  | conjR e _ _ _ ih1 ih2 ih3 =>
+    exact (LeafValid_congr SetEq.rfl' e).mpr (conjR_sem.mpr ⟨ih1, ih2, ih3⟩)
+  | disjR e _ ih => exact (LeafValid_congr SetEq.rfl' e).mpr (disjR_sem.mpr ih)
 
-/-- Completeness of the leaf semantics: if every leaf is an axiom, the sequent
-is derivable (by decomposing in any order). -/
+/-- Completeness of the leaf semantics: if every leaf is in the base, the
+sequent is derivable (by decomposing in any order, always removing the
+principal sentence from its side). -/
 theorem derivable_of_valid (h : LeafValid R Γ Δ) : Derivable R Γ Δ := by
   refine derivable_of_preserved R (LeafValid R) ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_
     (measure Γ Δ + 1) Γ Δ (by omega) h
   · intro Γ Δ hg hd hv
     have := hv _ _ ⟨_, _, _, _, S_true_atomic Γ hg, S_false_atomic Δ hd, SetEq.rfl', SetEq.rfl'⟩
-    refine Derivable.ax hg hd ?_
     simp only [AxA, List.append_nil, List.nil_append] at this
-    rcases this with ⟨a, h1, h2⟩ | hb
-    · exact Or.inl ⟨a, mem_atomsOf.mp h1, mem_atomsOf.mp h2⟩
-    · exact Or.inr hb
-  · intro Γ Δ A hm hv; exact (negL_sem hm).mp hv
-  · intro Γ Δ A B hm hv; exact (implL_sem hm).mp hv
-  · intro Γ Δ A B hm hv; exact (conjL_sem hm).mp hv
-  · intro Γ Δ A B hm hv; exact (disjL_sem hm).mp hv
-  · intro Γ Δ A hm hv; exact (negR_sem hm).mp hv
-  · intro Γ Δ A B hm hv; exact (implR_sem hm).mp hv
-  · intro Γ Δ A B hm hv; exact (conjR_sem hm).mp hv
-  · intro Γ Δ A B hm hv; exact (disjR_sem hm).mp hv
+    exact Derivable.ax hg hd this
+  · intro Γ Δ A hm hv; exact (memL_sem hm negL_sem).mp hv
+  · intro Γ Δ A B hm hv; exact (memL_sem hm implL_sem).mp hv
+  · intro Γ Δ A B hm hv; exact (memL_sem hm conjL_sem).mp hv
+  · intro Γ Δ A B hm hv; exact (memL_sem hm disjL_sem).mp hv
+  · intro Γ Δ A hm hv; exact (memR_sem hm negR_sem).mp hv
+  · intro Γ Δ A B hm hv; exact (memR_sem hm implR_sem).mp hv
+  · intro Γ Δ A B hm hv; exact (memR_sem hm conjR_sem).mp hv
+  · intro Γ Δ A B hm hv; exact (memR_sem hm disjR_sem).mp hv
 
 /-- **Characterization.** Over a set-invariant base, `Γ ⇒ Δ` is derivable
-exactly when every leaf of its complete decomposition is an axiom. -/
+exactly when every leaf of its complete decomposition is in the base. -/
 theorem derivable_iff_valid (hR : R.SetInvariant) : Derivable R Γ Δ ↔ LeafValid R Γ Δ :=
   ⟨valid_of_derivable hR, derivable_of_valid⟩
 
-/-- **Invertibility of every rule** (the book's Prop. 27), for the calculus as
-pyNMMS implements it. -/
+/-- **Invertibility of every rule** (the book's Prop. 27, as reported), in the
+book's form: any context, the principal sentence possibly in it. -/
 theorem invertibility : Invertibility α := by
-  intro R hR Γ Δ h
-  have hv := valid_of_derivable hR h
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
-  · intro A hm; exact derivable_of_valid ((negL_sem hm).mp hv)
-  · intro A B hm
-    obtain ⟨h1, h2, h3⟩ := (implL_sem hm).mp hv
-    exact ⟨derivable_of_valid h1, derivable_of_valid h2, derivable_of_valid h3⟩
-  · intro A B hm; exact derivable_of_valid ((conjL_sem hm).mp hv)
-  · intro A B hm
-    obtain ⟨h1, h2, h3⟩ := (disjL_sem hm).mp hv
-    exact ⟨derivable_of_valid h1, derivable_of_valid h2, derivable_of_valid h3⟩
-  · intro A hm; exact derivable_of_valid ((negR_sem hm).mp hv)
-  · intro A B hm; exact derivable_of_valid ((implR_sem hm).mp hv)
-  · intro A B hm
-    obtain ⟨h1, h2, h3⟩ := (conjR_sem hm).mp hv
-    exact ⟨derivable_of_valid h1, derivable_of_valid h2, derivable_of_valid h3⟩
-  · intro A B hm; exact derivable_of_valid ((disjR_sem hm).mp hv)
+  intro R hR Γ Δ A B
+  simp only [derivable_iff_valid hR]
+  exact ⟨negL_sem, implL_sem, conjL_sem, disjL_sem, negR_sem, implR_sem, conjR_sem, disjR_sem⟩
+
+/-! ### The same, with the principal sentence removed from its side -/
+
+theorem negL_inv (hR : R.SetInvariant) (h : neg A ∈ Γ) (hd : Derivable R Γ Δ) :
+    Derivable R (rest Γ (neg A)) (A :: Δ) :=
+  derivable_of_valid ((memL_sem h negL_sem).mp (valid_of_derivable hR hd))
+theorem implL_inv (hR : R.SetInvariant) (h : impl A B ∈ Γ) (hd : Derivable R Γ Δ) :
+    Derivable R (rest Γ (impl A B)) (A :: Δ) ∧ Derivable R (B :: rest Γ (impl A B)) Δ ∧
+      Derivable R (B :: rest Γ (impl A B)) (A :: Δ) := by
+  obtain ⟨h1, h2, h3⟩ := (memL_sem h implL_sem).mp (valid_of_derivable hR hd)
+  exact ⟨derivable_of_valid h1, derivable_of_valid h2, derivable_of_valid h3⟩
+theorem conjL_inv (hR : R.SetInvariant) (h : conj A B ∈ Γ) (hd : Derivable R Γ Δ) :
+    Derivable R (A :: B :: rest Γ (conj A B)) Δ :=
+  derivable_of_valid ((memL_sem h conjL_sem).mp (valid_of_derivable hR hd))
+theorem disjL_inv (hR : R.SetInvariant) (h : disj A B ∈ Γ) (hd : Derivable R Γ Δ) :
+    Derivable R (A :: rest Γ (disj A B)) Δ ∧ Derivable R (B :: rest Γ (disj A B)) Δ ∧
+      Derivable R (A :: B :: rest Γ (disj A B)) Δ := by
+  obtain ⟨h1, h2, h3⟩ := (memL_sem h disjL_sem).mp (valid_of_derivable hR hd)
+  exact ⟨derivable_of_valid h1, derivable_of_valid h2, derivable_of_valid h3⟩
+theorem negR_inv (hR : R.SetInvariant) (h : neg A ∈ Δ) (hd : Derivable R Γ Δ) :
+    Derivable R (A :: Γ) (rest Δ (neg A)) :=
+  derivable_of_valid ((memR_sem h negR_sem).mp (valid_of_derivable hR hd))
+theorem implR_inv (hR : R.SetInvariant) (h : impl A B ∈ Δ) (hd : Derivable R Γ Δ) :
+    Derivable R (A :: Γ) (B :: rest Δ (impl A B)) :=
+  derivable_of_valid ((memR_sem h implR_sem).mp (valid_of_derivable hR hd))
+theorem conjR_inv (hR : R.SetInvariant) (h : conj A B ∈ Δ) (hd : Derivable R Γ Δ) :
+    Derivable R Γ (A :: rest Δ (conj A B)) ∧ Derivable R Γ (B :: rest Δ (conj A B)) ∧
+      Derivable R Γ (A :: B :: rest Δ (conj A B)) := by
+  obtain ⟨h1, h2, h3⟩ := (memR_sem h conjR_sem).mp (valid_of_derivable hR hd)
+  exact ⟨derivable_of_valid h1, derivable_of_valid h2, derivable_of_valid h3⟩
+theorem disjR_inv (hR : R.SetInvariant) (h : disj A B ∈ Δ) (hd : Derivable R Γ Δ) :
+    Derivable R Γ (A :: B :: rest Δ (disj A B)) :=
+  derivable_of_valid ((memR_sem h disjR_sem).mp (valid_of_derivable hR hd))
+
+/-- **Keeping the principal sentence in the context changes nothing.** The
+book's L¬ instance whose context still contains `¬A` has a derivable premise
+exactly when the instance with `¬A` removed does (the other rules are alike,
+by `invertibility`). -/
+theorem negL_keep_iff (hR : R.SetInvariant) (h : neg A ∈ Γ) :
+    Derivable R Γ (A :: Δ) ↔ Derivable R (rest Γ (neg A)) (A :: Δ) := by
+  simp only [derivable_iff_valid hR]
+  exact negL_sem.symm.trans
+    ((LeafValid_congr (setEq_cons_self h) SetEq.rfl').symm.trans (memL_sem h negL_sem))
 
 end NMMS
