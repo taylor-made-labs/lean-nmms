@@ -125,6 +125,35 @@ that (each rule takes its context explicitly). Nothing else is built in.
   `checkEntitlement_sound` (Entitlement.lean). These are separate
   calculations, not NMMS derivability.
 
+## Checks against the published rules
+
+[`tests/BookRules.lean`](tests/BookRules.lean) separately transcribes the
+chapter's atomic axiom and eight rules with unrestricted set contexts. It
+proves, by induction on the rules, that this reference and `Derivable`
+derive exactly the same sequents from the **same supplied base**. It also
+connects both actual reasoners to that reference. There is no Containment
+assumption or base completion. The reference rules do not call the search
+or use its decomposition semantics. An enforced axiom check covers the
+reference and bridge declarations.
+
+[`tests/test_nmms_forward.py`](tests/test_nmms_forward.py) checks the built
+executable against another independent implementation: starting with exactly
+the supplied atomic axioms, it repeatedly applies the published rules until
+no more sequents can be reached. It includes contexts that retain the
+principal formula and imports neither the existing Python reference nor
+the reasoner's decomposition code. The test covers all 16 atomic bases and
+all 1,024 sequents over `{p, ¬p, p∧p, p∨p, p→p}`, plus 4,352 selected
+two-atom cases. Every negative answer must also carry an accepted refutation.
+This is exhaustive for the stated one-atom formula palette, not for arbitrary
+formula depth.
+
+CI also replays every compiled project module with `leanchecker` and audits
+the types and bodies of every project declaration and their dependencies
+directly in Lean's checked environment. These complement the build and the
+existing regression tests. Sources, rule correspondence, and the remaining
+human transcription boundary are documented in
+[`docs/nmms-source-correspondence.md`](docs/nmms-source-correspondence.md).
+
 ## The decision procedure and `nmms-lean`
 
 `nmms-lean` reads JSON Lines on standard input, answers with
@@ -263,9 +292,12 @@ then:
     lake env lean Axioms.lean                     # prints the axioms each main theorem uses
     lake env lean tests/AllConstantsAxioms.lean   # prints FIXES_AXIOMS_OK 2049 constants
     lake env lean tests/NmmsRules.lean            # kernel examples of the chapter's rules
+    lake env lean tests/BookRules.lean            # same-base equivalence to the source transcription
+    lake env leanchecker --verbose LeanNmms Main # replay all compiled project proofs
     lake env lean tests/FixesDerivation.lean      # kernel examples (also FixesGround.lean)
     python3 -I difftest/malformed_test.py         # 41 input-hardening checks
     python3 -B -m unittest -v tests.test_nmms_rules   # rules vs. the stdlib reference
+    python3 -B -m unittest -v tests.test_nmms_forward # independent forward-rule closure
 
 Differential test (see "Differential test"): `python3 -m venv VENV`, then
 `VENV/bin/pip install --only-binary :all: --require-hashes -r difftest/requirements.txt`,
@@ -273,14 +305,17 @@ then `VENV/bin/python -I difftest/difftest.py --cases 500`.
 
 `.github/workflows/ci.yml` runs these on every push and pull request.
 `tests/test_fixes_lean.py` (run with `python3 -m unittest -v tests.test_fixes_lean`) runs
-the kernel examples, the JSON entry point, a source scan and the axiom audit.
+the kernel examples, source-rule correspondence, compiled proof replay, the JSON
+entry point, a source scan, the axiom audit, and the independent forward-rule
+suite. The existing CI entry point therefore enforces all of these checks.
 
 ## Known limits and open questions
 
-- `Derivable` is checked against the chapter by reading its rules (pp.
-  108–111), against an independent Python transcription of them by testing,
-  and against pyNMMS (plus Containment) by differential testing; faithfulness
-  to the printed rules is a matter of reading, not proof. Kaplan's
+- The independent reference in `tests/BookRules.lean` is checked against
+  the chapter by reading its rules (pp. 108–111); Lean proves its equivalence
+  to `Derivable`. The forward-rule tests independently check executable
+  behavior on finite cases. Matching a transcription to the printed rules
+  remains a source-review step, not a theorem about the PDF. Kaplan's
   two-premise system is not covered.
 - NMMS takes its axioms from the base as supplied. pyNMMS's documentation
   describes the chapter's material bases as obeying Containment; this
