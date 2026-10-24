@@ -12,8 +12,9 @@
      base that obeys Containment*: then `Γ ⇒ Δ` is derivable whenever the sides
      share any sentence, atomic or complex. Two forms: over a base with
      Containment for the atoms of a language `L` (`BaseRel.ContainmentOn L`,
-     which a finite base supplies), a shared sentence whose atoms are all in
-     `L` suffices, `overlap_derivable_on`; over a base with Containment for
+     which any base gets by adding `coEntries L`, `containmentOn_coEntries`),
+     a shared sentence whose atoms are all in `L` suffices,
+     `overlap_derivable_on`; over a base with Containment for
      every atom (`BaseRel.Containment`), any shared sentence does,
      `overlap_derivable` (the case `L` = the sentence's atoms). NMMS does not
      assume the base obeys Containment, and without it these sequents need

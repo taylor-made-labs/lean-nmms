@@ -203,8 +203,11 @@ def premises(seq: Sequent, side: str, s: Sentence) -> list[Sequent]:
 def full_decomposition(seq: Sequent) -> dict:
     """A certificate that decomposes every complex sentence (first left, then
     right, in text order) down to atomic leaves, each sent as an axiom leaf.
-    Over a base with Containment it checks whenever the sides share a
-    sentence (`NMMS.overlap_derivable`); the Lean checker verifies it."""
+    Over B plus Containment for the language (`coEntries`) it checks
+    whenever the sides share a sentence, since every atom of the sequent is
+    in the language (`NMMS.overlap_derivable_coEntries`, and by
+    `NMMS.invertibility` any complete decomposition of a derivable sequent
+    checks); the Lean checker verifies it."""
     for side, group in (("L", seq.gamma_complex), ("R", seq.delta_complex)):
         for s in sorted(group, key=str):
             return {"side": side, "principal": to_json(tree_of_sentence(s)),

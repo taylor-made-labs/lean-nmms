@@ -23,8 +23,9 @@
   * Both are written with explicit fuel `n` so that they are structurally
     recursive (the kernel can evaluate them, which `decide` uses for the
     examples). Fuel is not a limit in practice: each is called with
-    `measure Γ Δ + 1`, and `proveN_stable` proves that any fuel above the
-    connective count gives the same answer. That is the termination result:
+    `measure Γ Δ + 1`, and any fuel above the connective count gives the
+    same answer (`proveN_stable` for `prove`; for `fastN` it follows from
+    `fastN_sound` and `fastN_complete`). That is the termination result:
     proof depth is bounded by the connective count.
 -/
 import LeanNmms.Invertibility

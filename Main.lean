@@ -8,7 +8,7 @@
   for instance as a MONOTONE entry `a |~ a` for each atom `a`.
 
   Reads JSON Lines on standard input, one query per line, and writes one JSON
-  result per line. A query:
+  result per non-blank line (a blank line gets no answer). A query:
 
     { "id": <any>,
       "base": <pyNMMS MaterialBase.to_dict() output>,
@@ -24,10 +24,10 @@
   tree from pyNMMS's own parse.
 
   The base's "language" (pyNMMS's L_B), when present, must contain every atom
-  of the base's entries and of the query: the base relation is a relation on
-  sets of atoms of L_B, and a sentence with another atom is not a sentence of
-  the language, so such a query is refused with an error rather than
-  answered. Without "language" the language is taken to be whatever atoms
+  of the base's entries (defeaters included) and of the query: the base
+  relation is a relation on sets of atoms of L_B, and a sentence with another
+  atom is not a sentence of the language, so such a query is refused with an
+  error rather than answered. Without "language" the language is taken to be whatever atoms
   occur. A base that lists the same pair (as sets) twice is refused, since
   pyNMMS keeps one policy per pair and the two readings could differ.
 
@@ -53,11 +53,18 @@
   escape into U+FFFD, so distinct names such as "\udc80" and "\udc81" would
   become one atom and the answer would be about another base or sequent. A
   surrogate pair is one character and is accepted.
+  An object that repeats a key is refused too: `Json.parse` would keep only
+  the last value (`{"atom": "r", "atom": "p"}` would be read as `p`).
+  `prescan` counts the members each line has (every `:` outside a string) and
+  `handle` refuses the line when the parsed value has fewer. These line-level
+  errors, like bad JSON or UTF-8, a line over `--max-line-bytes` or nesting
+  over `--max-depth`, are {"error": "..."} without an "id".
 
   C is a certificate: {"ax": true} | {"side": "L"|"R", "principal": F,
   "keep": bool (optional, default false), "premises": [C] or [C, C, C]}.
   Nothing else is a certificate node: "ax" with another value or beside
-  another key, another "side", or an unknown key is refused.
+  another key, another "side", a "keep" that is not a boolean, a principal
+  that is an atom (no rule has one), or an unknown key is refused.
   An "ax" leaf must be an atomic sequent in the base. "keep": true selects the
   book's rule instance whose context still contains the principal sentence
   (in the book `Γ, A` is `Γ ∪ {A}`, so `Γ` may contain `A`).
@@ -213,9 +220,15 @@ def checkFormulas (pb : ParsedBase) (what : String) (fs : List (Formula String))
     Except String Unit :=
   checkLanguage pb what (fs.flatMap formulaAtoms)
 
+/-- The atoms a robustness policy names (a GUARDED entry's defeaters). -/
+def robustnessAtoms : Robustness String → List String
+  | .guarded g => g.left ++ g.right ++ g.pairs.flatMap fun p => p.1 ++ p.2
+  | _ => []
+
 /-- `consequences` is required (pyNMMS's `base.schema.json`) and must be an
 array; `language`, when present, is a list of atom names that must contain
-every atom of the entries. A pair listed twice is refused. -/
+every atom of the entries, defeaters included. A pair listed twice is
+refused. -/
 def parseBase (j : Json) : Except String ParsedBase := do
   let cs ← match field? j "consequences" with
     | some v => (do let a ← v.getArr?; pure a.toList)
@@ -230,7 +243,7 @@ def parseBase (j : Json) : Except String ParsedBase := do
     pure ({ ant, con, rob } : Entry String)
   let pb : ParsedBase := { entries, language }
   for e in entries do
-    checkLanguage pb "the base" (e.ant ++ e.con)
+    checkLanguage pb "the base" (e.ant ++ e.con ++ robustnessAtoms e.rob)
     if (entries.filter fun e' => setEqB e.ant e'.ant && setEqB e.con e'.con).length > 1 then
       throw s!"the base lists the pair {repr e.ant} |~ {repr e.con} more than once"
   pure pb
@@ -265,14 +278,16 @@ partial def parseCert (j : Json) : Except String (Cert String) := do
     | none => throw "a certificate node needs \"ax\": true or a \"side\""
   let φ ← parseFormula (← j.getObjVal? "principal")
   let keep ← match field? j "keep" with
-    | none | some Json.null => pure false
+    | none => pure false
     | some (Json.bool b) => pure b
     | some _ => throw "keep must be a boolean"
   let ps ← (← j.getObjVal? "premises").getArr?
   let cs ← ps.toList.mapM parseCert
-  if let some n := ruleArity (side == "L") φ then
+  match ruleArity (side == "L") φ with
+  | some n =>
     if cs.length != n then
       throw s!"certificate node needs {n} premises, got {cs.length}"
+  | none => throw "the principal of a rule node must be a complex sentence (an atom has no rule)"
   let c1 := cs.getD 0 .ax
   let c2 := cs.getD 1 .ax
   let c3 := cs.getD 2 .ax
@@ -371,10 +386,23 @@ def handleClosure (j : Json) (id : Json) : Except String Json := do
     else return reply false Json.null (some (refutationReason B initial cert claim))
   | k => throw s!"unknown certificate kind {k}"
 
-def handle (line : String) : Json :=
+/-- The number of object members in a parsed value. `Json.parse` keeps only
+the last value of a repeated key, so this is smaller than the line's own
+count (`prescan`) exactly when some object repeats a key. -/
+partial def jsonMembers : Json → Nat
+  | .obj kvs => kvs.toList.foldl (fun acc (_, v) => acc + 1 + jsonMembers v) 0
+  | .arr a => a.foldl (fun acc v => acc + jsonMembers v) 0
+  | _ => 0
+
+/-- Answer one line, given the number of object members `prescan` counted in
+it (a repeated key is refused rather than read by its last value). -/
+def handle (line : String) (members : Nat) : Json :=
   match Json.parse line with
   | .error e => Json.mkObj [("error", Json.str s!"bad JSON: {e}")]
   | .ok j =>
+    if jsonMembers j != members then
+      Json.mkObj [("error", Json.str "a JSON object repeats a key")]
+    else
     let id := (field? j "id").getD Json.null
     let r : Except String Json := do
       if let some op := field? j "op" then
@@ -411,7 +439,10 @@ def handle (line : String) : Json :=
     | .ok out => out
     | .error e => Json.mkObj [("id", id), ("error", Json.str e)]
 
-/-- Resource limits (see the header). -/
+/-- Resource limits: `--max-line-bytes` (default 4 MiB; a longer line gets
+`{"error": "line longer than --max-line-bytes N"}` once its newline arrives)
+and `--max-depth` (default 256 levels of `{`/`[`, checked by `prescan` before
+`Json.parse`). -/
 structure Limits where
   maxLineBytes : Nat := 4194304
   maxDepth : Nat := 256
@@ -429,17 +460,20 @@ def unicodeEscapeAt (bytes : ByteArray) (i : Nat) : Option Nat := do
   return (← digit 0) * 4096 + (← digit 1) * 256 + (← digit 2) * 16 + (← digit 3)
 
 /-- Check a raw line before `Json.parse`, without parsing it, in one pass and
-constant memory; the result is the error to report, if any. Two checks:
-the deepest `{`/`[` nesting (string contents and escapes are skipped),
-stopping as soon as `cap` is exceeded, since `Json.parse`'s recursion would
-otherwise follow the nesting; and every `\u` escape inside a string, which
-must not be an unpaired UTF-16 surrogate (see the header): an escape in
-D800-DBFF must be immediately followed by one in DC00-DFFF, and the pair is
-consumed together. -/
-def prescan (bytes : ByteArray) (cap : Nat) : Option String := Id.run do
+constant memory: either the error to report or the number of object members
+the line has. Two checks: the deepest `{`/`[` nesting (string contents and
+escapes are skipped), stopping as soon as `cap` is exceeded, since
+`Json.parse`'s recursion would otherwise follow the nesting; and every `\u`
+escape inside a string, which must not be an unpaired UTF-16 surrogate (see
+the header): an escape in D800-DBFF must be immediately followed by one in
+DC00-DFFF, and the pair is consumed together. In valid JSON every `:`
+outside a string separates one object member, so the count is the number of
+those; `handle` compares it with the parsed value to catch a repeated key. -/
+def prescan (bytes : ByteArray) (cap : Nat) : Except String Nat := Id.run do
   let unpaired (c : Nat) : String :=
     s!"unpaired UTF-16 surrogate escape \\u{(String.ofList (Nat.toDigits 16 c)).toUpper} in a JSON string"
   let mut depth := 0
+  let mut members := 0
   let mut inStr := false
   let mut skip := 0  -- bytes of the current escape still to pass over
   for i in [0:bytes.size] do
@@ -453,18 +487,19 @@ def prescan (bytes : ByteArray) (cap : Nat) : Option String := Id.run do
         | none => skip := 1
         | some c =>
           if c < 0xD800 || c > 0xDFFF then skip := 5
-          else if c ≥ 0xDC00 then return some (unpaired c)
+          else if c ≥ 0xDC00 then return .error (unpaired c)
           else match unicodeEscapeAt bytes (i + 6) with
-            | some d => if 0xDC00 ≤ d && d ≤ 0xDFFF then skip := 11 else return some (unpaired c)
-            | none => return some (unpaired c)
+            | some d => if 0xDC00 ≤ d && d ≤ 0xDFFF then skip := 11 else return .error (unpaired c)
+            | none => return .error (unpaired c)
       else if b == 34 then inStr := false
     else if b == 34 then inStr := true
+    else if b == 58 then members := members + 1
     else if b == 123 || b == 91 then
       depth := depth + 1
-      if depth > cap then return some s!"nesting deeper than --max-depth {cap}"
+      if depth > cap then return .error s!"nesting deeper than --max-depth {cap}"
     else if b == 125 || b == 93 then
       depth := depth - 1
-  return none
+  return .ok members
 
 def errLine (msg : String) : Json := Json.mkObj [("error", Json.str msg)]
 
@@ -475,8 +510,9 @@ def answerLine (lim : Limits) (bytes : ByteArray) : Option Json :=
   | some line =>
     let t := line.trimAscii.toString
     if t.isEmpty then none
-    else if let some e := prescan t.toUTF8 lim.maxDepth then some (errLine e)
-    else some (handle t)
+    else match prescan t.toUTF8 lim.maxDepth with
+      | .error e => some (errLine e)
+      | .ok members => some (handle t members)
 
 /-- Read standard input a byte at a time (`Stream.read n` blocks until `n` bytes
 or end of input, which would deadlock an interactive caller waiting for an

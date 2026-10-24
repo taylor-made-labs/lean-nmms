@@ -41,9 +41,10 @@ derivability over B plus Containment, not over B (see "Differential test").
 
 ## What is proved
 
-Every theorem below is in namespace `NMMS`. Outside comments, no source file
+Every theorem below is in namespace `NMMS`. Outside comments and string
+literals, no source file
 contains `sorry`, `admit`, `native_decide`, `extern` or `axiom`; each of the
-2,044 constants of `Main` and `LeanNmms` depends only on `propext`,
+2,052 constants of `Main` and `LeanNmms` depends only on `propext`,
 `Classical.choice` and `Quot.sound` (`tests/AllConstantsAxioms.lean`).
 "Derivable" means derivable in the Lean definition `Derivable`
 (Calculus.lean), which is the specification: the chapter's axiom clause and
@@ -114,7 +115,8 @@ that (each rule takes its context explicitly). Nothing else is built in.
   An accepted derivation puts the claim in it, `checkDerivation_sound`; an
   accepted closure refutation puts it outside and every atom it lists inside,
   `checkRefutation_sound`, via `valuation_sound` (every rule preserves truth
-  under one valuation). All in Derivation.lean. `nmms-lean` reports this as
+  under one valuation; Classical.lean). The rest is in Derivation.lean.
+  `nmms-lean` reports this as
   `"in_closure"`, never as `"derivable"`.
 - Stratified defeasible closure over ground atoms: an accepted certificate's
   closure is exactly the defined closure and its applications exactly the
@@ -133,7 +135,9 @@ nothing else. A query has an `id`, a `base` in pyNMMS's
 `MaterialBase.to_dict()` form, and `antecedent` and `consequent` as lists of
 formula trees (not pyNMMS sentence strings): `{"atom": "p"}`, `{"neg": F}`,
 `{"conj": [F, F]}`, `{"disj": [F, F]}`, `{"impl": [F, F]}`. The header of
-`Main.lean` documents every field. Example (`queries.jsonl`):
+`Main.lean` documents every field of the sequent and closure queries (the
+`score` request is described in `LeanNmms/Score.lean`). Example
+(`queries.jsonl`):
 
     {"id":"a","base":{"language":["p","q","r"],"consequences":[{"antecedent":["p"],"consequent":["q"],"robustness":{"kind":"exact"}}]},"antecedent":[{"atom":"p"}],"consequent":[{"atom":"q"}]}
     {"id":"b","base":{"language":["p","q","r"],"consequences":[{"antecedent":["p"],"consequent":["q"],"robustness":{"kind":"exact"}}]},"antecedent":[{"atom":"p"},{"atom":"r"}],"consequent":[{"atom":"q"}]}
@@ -156,12 +160,17 @@ query with another atom gets `{"error": ...}` rather than an answer. Without
 `language`, the atoms that occur are the language. A base that lists the
 same pair twice is refused (pyNMMS keeps one policy per pair), and so is a
 robustness value pyNMMS refuses: defeaters (`unless`) on an EXACT or
-MONOTONE entry, or an exclusion pair with no atoms. A formula object must
-have exactly one key, and a certificate node must be `{"ax": true}` or a rule
-node with `"side"` `"L"` or `"R"`. A line with an unpaired UTF-16 surrogate
-escape (such as a lone `\udc80`) is refused before parsing, since the JSON
-reader would turn distinct such names into one character. In each case the
-program answers about the base and sequent as written or not at all.
+MONOTONE entry, or an exclusion pair with no atoms; defeater atoms must be
+in the `language` too. A formula object must have exactly one key, and a
+certificate node must be `{"ax": true}` or a rule node on a complex
+sentence with `"side"` `"L"` or `"R"`. Two inputs that the JSON reader would
+silently reinterpret are refused: a line with an unpaired UTF-16 surrogate
+escape (such as a lone `\udc80`), which it would turn into U+FFFD so that
+distinct names become one, and an object that repeats a key, of which it
+would keep only the last value. In each case the program answers about the
+base and sequent as written or not at all. Errors found before the line is
+parsed (bad JSON or UTF-8, a line too long or nested too deeply, a
+surrogate, a repeated key) carry no `id`; blank lines get no answer.
 
 Two further request kinds, `"op": "closure"` and `"op": "score"`, check the
 closure certificates and the ground and entitlement certificates above. Both
@@ -202,9 +211,10 @@ by `decide`, as `tests/NmmsRules.lean` does.
 ## Differential test
 
 `difftest/difftest.py` compares `nmms-lean` with pyNMMS 0.15.1 (pinned, with
-the wheel's hash, in `difftest/requirements.txt`). Each case builds a base B
+the wheel's hash, in `difftest/requirements.txt`). The harness builds a base B
 over atoms p, q, r, s (0 to 4 entries, mixing EXACT, MONOTONE and GUARDED)
-through pyNMMS's API, and a sequent of random formulas, sent to Lean with sides
+through pyNMMS's API, shared by `--per-base` (default 3) consecutive cases;
+each case is a sequent of random formulas, sent to Lean with sides
 shuffled and duplicated. Since pyNMMS adds Containment, it checks that:
 pyNMMS over B (with a fresh reasoner and with a shared persistent cache)
 gives the same verdict as Lean over B plus Containment (a MONOTONE `a |~ a`
@@ -232,7 +242,9 @@ with pyNMMS (over B plus Containment), 0 disagreements with the reference
 
 The deep run was made with `--timeout 60`; its slowest Lean answer (checking
 an expanded pyNMMS certificate) took 20.4 s. `difftest/rerun_timeouts.py`
-replays a recorded timeout exactly (the same base, certificate and limits). Not covered: pyNMMS's sentence
+replays the queries of a recorded timeout (the same base, the certificate
+rebuilt from pyNMMS's trace, the same `--max-line-bytes`) in a fresh
+`nmms-lean` with a longer time limit. Not covered: pyNMMS's sentence
 parser (trees are sent), `max_depth`, ontology and RDF bases, atom names
 beyond plain identifiers.
 
@@ -244,10 +256,10 @@ then:
 
     lake build                                    # library and .lake/build/bin/nmms-lean
     lake env lean Axioms.lean                     # prints the axioms each main theorem uses
-    lake env lean tests/AllConstantsAxioms.lean   # prints FIXES_AXIOMS_OK 2044 constants
+    lake env lean tests/AllConstantsAxioms.lean   # prints FIXES_AXIOMS_OK 2052 constants
     lake env lean tests/NmmsRules.lean            # kernel examples of the chapter's rules
     lake env lean tests/FixesDerivation.lean      # kernel examples (also FixesGround.lean)
-    python3 -I difftest/malformed_test.py         # 29 input-hardening checks
+    python3 -I difftest/malformed_test.py         # 37 input-hardening checks
     python3 -B -m unittest -v tests.test_nmms_rules   # rules vs. the stdlib reference
 
 Differential test (see "Differential test"): `python3 -m venv VENV`, then

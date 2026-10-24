@@ -1,7 +1,7 @@
 """Regression test for the input hardening of `nmms-lean` (Main.lean).
 
 Stdlib only; runs the built binary with a list argv (no shell). Checks:
-  * 21 malformed or over-limit inputs each return an {"error": ...} line within
+  * 27 malformed or over-limit inputs each return an {"error": ...} line within
     5 seconds: a line over the byte cap, nesting over the depth cap (1,000,000
     nested `neg`), a base without "consequences", a wrong-typed field
     ("unless": 5), an unknown "engine", a certificate with the wrong number of
@@ -12,21 +12,26 @@ Stdlib only; runs the built binary with a list argv (no shell). Checks:
     MONOTONE entry or on one with no "kind", "unless": 5 on a MONOTONE entry,
     an empty exclusion pair); a formula object with two keys, a non-string
     atom; a certificate with side "X", an {"ax": false} leaf, a node with both
-    "ax" and "side", a node with an unknown key;
+    "ax" and "side", a node with an unknown key, a "keep" of null, a rule
+    node on an atom; a repeated key, which `Json.parse` would read by its last
+    value (in a formula, in a certificate leaf, spelled with an escape); a
+    defeater atom outside the base's language;
   * 3 well-formed queries (same shape as the difftest corpus) return exactly
     the expected answers (captured from the pre-hardening build; the third
     changed when Containment stopped being added: over the empty base
     `p, q ⇒ q` is not an axiom, so `p ∧ q ⇒ q` is not derivable and its
     certificate is rejected);
-  * 5 well-formed queries that the checks above must not refuse return
+  * 7 well-formed queries that the checks above must not refuse return
     exactly the expected answers: an atom written as a surrogate-pair escape
     (an emoji, which `json.dumps` sends as a high and a low escape; a
     different emoji stays a different atom), an escaped backslash followed
-    by `udc80` (not an escape), and robustness that pyNMMS accepts
-    ({"kind": "monotone", "unless": {}} and the plain string "monotone").
+    by `udc80` (not an escape), robustness that pyNMMS accepts
+    ({"kind": "monotone", "unless": {}} and the plain string "monotone"), and
+    atoms containing ":" (also after an escaped quote), which the
+    repeated-key check counts only outside strings.
 
 Run (from anywhere, after `lake build`):  python3 -I difftest/malformed_test.py
-Exit status 0 only if all 29 checks pass.
+Exit status 0 only if all 37 checks pass.
 """
 
 import json
@@ -126,6 +131,27 @@ error_cases = {
     "certificate node with an unknown key": (
         query(antecedent=[CONJ], cert={"side": "L", "principal": CONJ, "premises": [{"ax": True}],
                                        "note": "x"}), [], "unknown key note"),
+    'certificate "keep": null': (
+        query(antecedent=[CONJ], cert={"side": "L", "principal": CONJ, "keep": None,
+                                       "premises": [{"ax": True}]}), [], "keep must be a boolean"),
+    "certificate rule node on an atom": (
+        query(cert={"side": "L", "principal": P, "premises": []}), [], "an atom has no rule"),
+    # json.dumps cannot repeat a key, so these lines are written out.
+    "repeated key in a formula": (
+        '{"id":1,"base":{"language":["p","q","r"],"consequences":[{"antecedent":["p"],'
+        '"consequent":["q"]}]},"antecedent":[{"atom":"r","atom":"p"}],"consequent":[{"atom":"q"}]}\n',
+        [], "repeats a key"),
+    "repeated key in a certificate leaf": (
+        '{"id":1,"base":{"language":["p","q"],"consequences":[{"antecedent":["p"],'
+        '"consequent":["q"]}]},"antecedent":[{"atom":"p"}],"consequent":[{"atom":"q"}],'
+        '"cert":{"ax":false,"ax":true}}\n', [], "repeats a key"),
+    "repeated key spelled with an escape": (
+        '{"id":1,"base":{"language":["p","q","r"],"consequences":[{"antecedent":["p"],'
+        '"consequent":["q"]}]},"antecedent":[{"atom":"r","\\u0061tom":"p"}],'
+        '"consequent":[{"atom":"q"}]}\n', [], "repeats a key"),
+    "defeater atom outside the language": (
+        rob_query({"kind": "guarded", "unless": {"antecedent": ["zzz"]}}), [],
+        "atom zzz in the base is not in the base's language"),
 }
 
 # Expected answers on these three corpus-shaped queries (see the header).
@@ -157,6 +183,8 @@ accepted_cases = {
         rob_query({"kind": "monotone", "unless": {}}, [P, {"atom": "r"}]), DERIVABLE),
     'robustness "monotone" as a plain string (pyNMMS accepts it)': (
         rob_query("monotone", [P, {"atom": "r"}]), DERIVABLE),
+    'an atom containing ":"': (atom_query("a:b", "a:b"), DERIVABLE),
+    'an atom containing an escaped quote and ":"': (atom_query('a":b', 'a":b'), DERIVABLE),
 }
 
 passed = failed = 0
