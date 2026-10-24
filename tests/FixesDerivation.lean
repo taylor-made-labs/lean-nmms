@@ -35,7 +35,8 @@ example : checkDerivation base [a] [second, first] c = false := by decide
 example : checkDerivation base [a] [first] c = false := by decide
 example : checkDerivation base [a] [first, second] z = false := by decide
 
--- No circular or self support, even though reflexivity is a valid NMMS proof.
+-- No circular or self support. (`c ⇒ c` is not even an NMMS sequent over this
+-- base: NMMS adds no Containment, and the base has no `c |~ c`.)
 example : checkDerivation base [a]
     [{ premises := [c], conclusion := c, cert := .ax }] c = false := by decide
 example : checkDerivation base []
@@ -45,13 +46,19 @@ example : checkDerivation base []
 example : checkDerivation base [a]
     [{ premises := [a], conclusion := c, cert := .ax }] c = false := by decide
 
--- Check a complex proof tree as well as atomic axiom leaves.
+-- Check a complex proof tree as well as atomic axiom leaves. The leaf
+-- `amber_seed, amber_mid ⇒ amber_seed` must be in the base: Containment is not
+-- added, so over the empty base the same step is refused.
 def pair : Formula String := .conj a b
 def unpack : DerivationStep String := {
   premises := [pair], conclusion := a,
-  cert := .node true pair .ax .ax .ax }
-example : checkDerivation [] [pair] [unpack] a = true := by decide
-example : checkDerivation [] [a] [unpack] a = false := by decide
+  cert := .node true pair false .ax .ax .ax }
+def pairBase : List (Entry String) := [
+  { ant := ["amber_seed", "amber_mid"], con := ["amber_seed"], rob := .exact }]
+example : checkDerivation pairBase [pair] [unpack] a = true := by decide
+example : checkDerivation [] [pair] [unpack] a = false := by decide
+example : checkDerivation pairBase [a] [unpack] a = false := by decide
+example : check (baseRel ([] : List (Entry String))) .ax [a] [a] = false := by decide
 
 -- This pins the soundness theorem's type, not merely the existence of a name.
 example (steps : List (DerivationStep String)) (claim : Formula String)

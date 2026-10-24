@@ -88,6 +88,9 @@ class LeanAcceptance(unittest.TestCase):
     def test_ground_and_entitlement_kernel_examples(self):
         self.lean("tests/FixesGround.lean")
 
+    def test_nmms_rule_kernel_examples(self):
+        self.lean("tests/NmmsRules.lean")
+
     def test_ordered_derivation_json_entry_point(self):
         a, b, c, z = [{"atom": name} for name in ("seed", "mid", "ready", "intruder")]
         base = {"language": ["seed", "mid", "ready", "intruder"], "consequences": [
@@ -109,6 +112,9 @@ class LeanAcceptance(unittest.TestCase):
                               "initial_premises": [a], "claim": c,
                               "certificate": {"kind": "derivation", "steps": steps}})
                 self.assertIs(result["accepted"], wanted, result)
+                # closure membership is reported as such, never as derivability
+                self.assertNotIn("derivable", result)
+                self.assertIs(result["in_closure"], True if wanted else None, result)
                 if not wanted:
                     self.assertTrue(result.get("reason"), result)
 

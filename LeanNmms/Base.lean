@@ -16,7 +16,14 @@
   are not modelled; the differential test never generates an empty pair.
   pyNMMS keeps one policy per pair (re-adding replaces it); the test harness
   sends Lean the base's own `to_dict()` serialisation, which has one entry per
-  pair. Containment (pyNMMS's "Ax1") lives in the calculus, not here.
+  pair (`nmms-lean` refuses a base that lists a pair twice).
+
+  `baseRel B` is the whole base: NMMS takes its axioms from it and from
+  nowhere else. pyNMMS's `is_axiom` also accepts every atomic sequent whose
+  sides share an atom ("Ax1", Containment); that is *not* part of `baseRel`
+  or of the calculus. To give a base Containment, supply it: the MONOTONE
+  entries `a |~ a`, one per atom `a`, contribute exactly the atomic sequents
+  whose sides share an atom (`baseRel_containment`).
 -/
 import LeanNmms.Calculus
 
@@ -63,7 +70,8 @@ def Entry.matches (e : Entry α) (Γa Δa : List α) : Bool :=
   | .monotone => subsetB e.ant Γa && subsetB e.con Δa
   | .guarded g => subsetB e.ant Γa && subsetB e.con Δa && g.allows Γa Δa
 
-/-- pyNMMS's `MaterialBase.is_axiom`, minus Containment ("Ax2"). -/
+/-- The base relation of a list of entries: pyNMMS's `MaterialBase.is_axiom`
+"Ax2" (its "Ax1", Containment, is not included). -/
 def baseRel (B : List (Entry α)) : BaseRel α :=
   fun Γa Δa => B.any (fun e => e.matches Γa Δa)
 
@@ -106,6 +114,13 @@ theorem baseRel_setInvariant (B : List (Entry α)) : (baseRel B).SetInvariant :=
       have r2 : SetEq p.2 p.2 := fun _ => Iff.rfl
       rw [subsetB_congr r1 ha, subsetB_congr r2 hb]
     rw [e1, e2, e3]
+
+/-- MONOTONE `a |~ a` entries, one per atom of `L`, supply Containment for
+the atoms of `L` and nothing else. -/
+theorem baseRel_containment (L : List α) (X Y : List α) :
+    baseRel (L.map fun a => { ant := [a], con := [a], rob := .monotone }) X Y = true ↔
+      ∃ a ∈ L, a ∈ X ∧ a ∈ Y := by
+  simp [baseRel, Entry.matches, subsetB]
 
 /-- Hence, over a pyNMMS base, NMMS derivability depends only on the sets. -/
 theorem derivable_congr_base (B : List (Entry α)) {Γ Δ Γ' Δ' : List (Formula α)}

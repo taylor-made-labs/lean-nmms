@@ -2,7 +2,9 @@
 
 Usage: <pyNMMS venv>/bin/python -I difftest/rerun_timeouts.py RECORDS.jsonl SECONDS
 Each case runs in its own nmms-lean process, all in parallel; prints one line
-per case: id, connectives, pyNMMS verdict, Lean verdict (or "timeout"), seconds.
+per case: id, connectives, pyNMMS verdict, Lean verdict over the recorded base
+plus Containment (what pyNMMS's verdict should equal, see difftest.py), or
+"timeout", and seconds.
 """
 import json
 import subprocess
@@ -12,7 +14,11 @@ from pathlib import Path
 
 from pynmms.syntax import ATOM, NEG, parse_sentence
 
-EXE = Path(__file__).resolve().parent.parent / ".lake" / "build" / "bin" / "nmms-lean"
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import nmms_reference as ref  # noqa: E402
+
+EXE = HERE.parent / ".lake" / "build" / "bin" / "nmms-lean"
 
 
 def tree(s):
@@ -27,7 +33,7 @@ recs = [json.loads(l) for l in open(sys.argv[1]) if '"lean-timeout"' in l]
 limit = float(sys.argv[2])
 procs = []
 for r in recs:
-    q = {"id": r["id"], "base": r["base"],
+    q = {"id": r["id"], "base": ref.with_containment(r["base"]),
          "antecedent": [tree(parse_sentence(s)) for s in r["ant"]],
          "consequent": [tree(parse_sentence(s)) for s in r["con"]]}
     p = subprocess.Popen([str(EXE)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)

@@ -6,7 +6,7 @@
   (the default) the base entry licenses only `p ⇒ q` itself, so adding `r` to
   the premises loses the implication. Atoms are `Nat` (p = 0, q = 1, r = 2) so
   that the decision procedure runs in the kernel (`decide`); its verdicts are
-  trusted because of `prove_iff`.
+  trusted because of `fastProve_iff`.
 
   For contrast, the same entry with pyNMMS's MONOTONE policy survives the
   addition, and with a GUARDED policy whose defeater is `r` it does not.
@@ -53,10 +53,21 @@ theorem pq_guarded :
     Derivable (baseRel (pq (.guarded { left := [2] }))) [atom 0, atom 3] [atom 1] := by
   decide
 
-/-- A sanity check of supraclassicality on a small instance: excluded middle
-over the weakening base. -/
-theorem excluded_middle_instance :
-    Derivable (baseRel (pq .exact)) [] [disj (atom 2) (neg (atom 2))] := by
+/-- No Containment is added: over the empty base `p ⇒ p` is not derivable. -/
+theorem empty_base_no_identity : ¬ Derivable (baseRel ([] : List (Entry Nat))) [atom 0] [atom 0] := by
+  decide
+
+/-- Excluded middle needs the base to supply `r |~ r`: over `{p |~ q}` it is
+not derivable (R∨, then R¬, leave `r ⇒ r`, which is not in the base). -/
+theorem excluded_middle_not_derived :
+    ¬ Derivable (baseRel (pq .exact)) [] [disj (atom 2) (neg (atom 2))] := by
+  decide
+
+/-- With `r |~ r` supplied (MONOTONE, so it holds in any context), excluded
+middle for `r` is derivable. -/
+theorem excluded_middle_with_rr :
+    Derivable (baseRel (pq .exact ++ [{ ant := [2], con := [2], rob := .monotone }])) []
+      [disj (atom 2) (neg (atom 2))] := by
   decide
 
 end NMMS

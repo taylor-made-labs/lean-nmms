@@ -1,16 +1,27 @@
 """Differential test: pyNMMS 0.15.1 against the Lean NMMS decision procedure.
 
-Purpose. The Lean procedure (`NMMS.prove`) is proved sound and complete
-against the Lean formalization of the calculus. This harness checks that
-pyNMMS computes the same relation, on generated bases and sequents, so that
-the Lean proofs say something about the running Python reasoner (the Cedar
-method: a proved model plus differential random testing of the production
-code).
+Purpose. The Lean procedures (`NMMS.fastProve`, `NMMS.prove`) are proved
+to accept exactly the sequents NMMS derives from the supplied base. pyNMMS
+differs from NMMS in one known way: its axiom test also accepts every
+sequent whose sides share an atom or a complex sentence, i.e. it adds
+Containment to the base. So this harness checks two things on generated
+bases and sequents:
+
+* pyNMMS over a base B agrees with Lean over B plus explicit Containment
+  (a MONOTONE `a |~ a` entry for each atom of the language), so that the
+  Lean proofs say something about the running Python reasoner (the Cedar
+  method: a proved model plus differential random testing of the production
+  code). pyNMMS's answer over B is NMMS derivability over that larger base,
+  not over B;
+* Lean over B itself agrees with the stdlib reference implementation of the
+  chapter's rules (`nmms_reference.py`), and the harness counts how often
+  pyNMMS's added Containment changes the verdict ("containment_changed").
 
 What each case does.
 1. Generate a base over a small atom pool, with EXACT, MONOTONE and GUARDED
    entries, through pyNMMS's own `MaterialBase.add_consequence`, and send
-   Lean the base's `to_dict()` serialization.
+   Lean the base's `to_dict()` serialization: once as it is (B), once with
+   Containment added (B+CO).
 2. Generate a sequent of random formulas, rendered in pyNMMS's surface
    syntax. pyNMMS parses the strings; the formula trees sent to Lean are
    built from pyNMMS's parse (and also compared with the generator's tree, a
@@ -21,10 +32,15 @@ What each case does.
    exercises the memo cache across queries).
 4. When pyNMMS says "derivable", rebuild a proof-tree certificate from
    pyNMMS's own trace (which rule it applied to which sentence, which leaves
-   it judged axioms) and have the Lean checker verify it.
-5. When Lean says "not derivable", it also builds a one-branch refutation and
-   checks it with its proved-sound refutation checker (`NMMS.refute`); the
-   harness counts accepted, rejected and missing refutations.
+   it judged axioms) and have the Lean checker verify it over B+CO. A leaf
+   that pyNMMS judged an axiom only because its sides share a sentence is not
+   an NMMS axiom unless it is an atomic base sequent, so the harness replaces
+   each non-atomic such leaf by its full decomposition, which the checker
+   then verifies leaf by leaf.
+5. When Lean says "not derivable" (over B or over B+CO), it also builds a
+   one-branch refutation and checks it with its proved-sound refutation
+   checker (`NMMS.refute`); the harness counts accepted, rejected and
+   missing refutations.
 6. Invertibility probe: for each complex sentence on either side, compare the
    conclusion's derivability with the derivability of all that rule's
    premises (by pyNMMS). Invertibility is what a short "not derivable"
@@ -56,6 +72,9 @@ from pynmms.sequent import Sequent
 from pynmms.syntax import ATOM, CONJ, DISJ, IMPL, NEG, Sentence, parse_sentence
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import nmms_reference as ref  # noqa: E402  (stdlib-only, in this directory)
+
 LEAN_EXE = HERE.parent / ".lake" / "build" / "bin" / "nmms-lean"
 
 ATOMS = ["p", "q", "r", "s"]
@@ -152,13 +171,27 @@ def premises(seq: Sequent, side: str, s: Sentence) -> list[Sequent]:
     return [rest.with_right(a, b)]
 
 
+def full_decomposition(seq: Sequent) -> dict:
+    """A certificate that decomposes every complex sentence (first left, then
+    right, in text order) down to atomic leaves, each sent as an axiom leaf.
+    Over a base with Containment it checks whenever the sides share a
+    sentence (`NMMS.overlap_derivable`); the Lean checker verifies it."""
+    for side, group in (("L", seq.gamma_complex), ("R", seq.delta_complex)):
+        for s in sorted(group, key=str):
+            return {"side": side, "principal": to_json(tree_of_sentence(s)),
+                    "premises": [full_decomposition(p) for p in premises(seq, side, s)]}
+    return {"ax": True}
+
+
 def cert_from_trace(root: Sequent, entries) -> dict | None:
     """Rebuild a proof tree from pyNMMS's trace.
 
     The trace records every axiom leaf and every rule attempt, but not cache
     hits, so the tree is rebuilt by sequent: a sequent is proved if pyNMMS
     recorded it as an axiom, or recorded a rule attempt on it whose premises
-    are all proved. Only pyNMMS's own choices are used.
+    are all proved. Only pyNMMS's own choices are used, except that a
+    non-atomic leaf pyNMMS accepted by its shared-sentence shortcut is
+    expanded by `full_decomposition`.
     """
     axioms = {e.sequent for e in entries if e.kind == "AXIOM"}
     attempts: dict[Sequent, list] = {}
@@ -173,7 +206,7 @@ def cert_from_trace(root: Sequent, entries) -> dict | None:
         memo[seq] = None
         out = None
         if seq in axioms:
-            out = {"ax": True}
+            out = full_decomposition(seq)
         else:
             for side, s in attempts.get(seq, ()):
                 subs = [build(p) for p in premises(seq, side, s)]
@@ -211,8 +244,9 @@ def main() -> int:
     rng = random.Random(args.seed)
 
     def start_lean():
-        return subprocess.Popen([str(LEAN_EXE)], stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, text=True, bufsize=1)
+        # Expanded certificates (see step 4) can exceed the default 4 MiB line cap.
+        return subprocess.Popen([str(LEAN_EXE), "--max-line-bytes", str(1 << 28)],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
 
     lean = start_lean()
     times = {"lean_max_s": 0.0, "py_max_s": 0.0, "lean_total_s": 0.0, "py_total_s": 0.0}
@@ -240,13 +274,16 @@ def main() -> int:
                  parse_mismatch=0, lean_error=0, certs_built=0, certs_missing=0,
                  certs_ok=0, certs_rejected=0, cert_nodes=0, invert_checks=0,
                  invert_fail=0, lean_timeout=0, refute_ok=0, refute_rejected=0,
-                 refute_missing=0, refute_steps=0)
+                 refute_missing=0, refute_steps=0, base_derivable=0, ref_disagree=0,
+                 containment_changed=0)
     bad = []
     case_id = 0
     while case_id < args.cases:
         base = gen_base(rng)
         shared = NMMSReasoner(base, persistent_cache=True)
         bdict = base.to_dict()
+        bdict_co = ref.with_containment(bdict)
+        ref_prove = ref.make_prover(ref.Base(bdict))
         for _ in range(args.per_base):
             if case_id >= args.cases:
                 break
@@ -279,7 +316,7 @@ def main() -> int:
             lcon = [parsed[s] for s in con_s] + [parsed[s] for s in con_s if rng.random() < 0.3]
             rng.shuffle(lant)
             rng.shuffle(lcon)
-            q = {"id": case_id, "base": bdict, "antecedent": [to_json(t) for t in lant],
+            q = {"id": case_id, "base": bdict_co, "antecedent": [to_json(t) for t in lant],
                  "consequent": [to_json(t) for t in lcon]}
             cert = None
             if py:
@@ -293,42 +330,57 @@ def main() -> int:
                     stats["cert_nodes"] += cert_size(cert)
                     q["cert"] = cert
             out = ask_lean(q)
+            # The same sequent over B itself (no Containment): NMMS proper.
+            out_b = ask_lean({**q, "base": bdict, "cert": None})
             stats["cases"] += 1
-            if out is None:
+            if out is None or out_b is None:
                 stats["lean_timeout"] += 1
                 bad.append({"id": case_id, "kind": "lean-timeout", "ant": ant_s,
                             "con": con_s, "connectives": res.connectives,
                             "pynmms": py, "pynmms_nodes": res.nodes, "base": bdict})
                 continue
-            if "error" in out:
+            if "error" in out or "error" in out_b:
                 stats["lean_error"] += 1
-                bad.append({"id": case_id, "kind": "lean-error", "error": out["error"]})
+                bad.append({"id": case_id, "kind": "lean-error",
+                            "error": out.get("error") or out_b.get("error")})
                 continue
+            want_b = ref_prove(frozenset(ref.freeze(to_json(t)) for t in lant),
+                               frozenset(ref.freeze(to_json(t)) for t in lcon))
+            stats["base_derivable"] += out_b["derivable"]
+            if out_b["derivable"] != want_b:
+                stats["ref_disagree"] += 1
+                bad.append({"id": case_id, "kind": "reference", "ant": ant_s, "con": con_s,
+                            "reference": want_b, "lean": out_b["derivable"], "base": bdict})
+            if out_b["derivable"] != py:
+                stats["containment_changed"] += 1
             stats["derivable" if py else "underivable"] += 1
             if out["derivable"] != py:
                 stats["disagree"] += 1
                 bad.append({"id": case_id, "kind": "verdict", "ant": ant_s, "con": con_s,
-                            "pynmms": py, "lean": out["derivable"], "base": bdict})
+                            "pynmms": py, "lean": out["derivable"], "base": bdict,
+                            "lean_base": bdict_co})
             if cert is not None:
                 if out["cert_ok"]:
                     stats["certs_ok"] += 1
                 else:
                     stats["certs_rejected"] += 1
                     bad.append({"id": case_id, "kind": "cert-rejected", "ant": ant_s,
-                                "con": con_s, "cert": cert, "base": bdict})
+                                "con": con_s, "cert": cert, "base": bdict_co})
             # One-branch refutation (built and checked by Lean) for "not derivable".
-            if not out["derivable"]:
-                if out.get("refute_ok") is True:
+            for o, b in ((out, bdict_co), (out_b, bdict)):
+                if o["derivable"]:
+                    continue
+                if o.get("refute_ok") is True:
                     stats["refute_ok"] += 1
-                    stats["refute_steps"] += out.get("refute_len") or 0
-                elif out.get("refute_len") is None:
+                    stats["refute_steps"] += o.get("refute_len") or 0
+                elif o.get("refute_len") is None:
                     stats["refute_missing"] += 1
                     bad.append({"id": case_id, "kind": "refute-missing", "ant": ant_s,
-                                "con": con_s, "base": bdict})
+                                "con": con_s, "base": b})
                 else:
                     stats["refute_rejected"] += 1
                     bad.append({"id": case_id, "kind": "refute-rejected", "ant": ant_s,
-                                "con": con_s, "base": bdict})
+                                "con": con_s, "base": b})
             # Invertibility probe, by pyNMMS.
             seq = Sequent.from_strings(ant_s, con_s)
             for side, group in (("L", seq.gamma_complex), ("R", seq.delta_complex)):

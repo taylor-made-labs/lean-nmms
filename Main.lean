@@ -1,6 +1,12 @@
 /-
   nmms-lean: the verified NMMS decision procedure as a command-line program.
 
+  "derivable" means derivable in NMMS (Hlobil and Brandom 2025, ch. 3) from
+  the supplied base and nothing else: the axioms are the base's atomic
+  sequents. Containment is not added, so over a base without `p |~ p` the
+  answer for `p ⇒ p` is false; a caller who wants Containment supplies it,
+  for instance as a MONOTONE entry `a |~ a` for each atom `a`.
+
   Reads JSON Lines on standard input, one query per line, and writes one JSON
   result per line. A query:
 
@@ -15,22 +21,38 @@
   sentence strings, so that pyNMMS's parser stays outside what is compared;
   the harness builds each tree from pyNMMS's own parse.
 
+  The base's "language" (pyNMMS's L_B), when present, must contain every atom
+  of the base's entries and of the query: the base relation is a relation on
+  sets of atoms of L_B, and a sentence with another atom is not a sentence of
+  the language, so such a query is refused with an error rather than
+  answered. Without "language" the language is taken to be whatever atoms
+  occur. A base that lists the same pair (as sets) twice is refused, since
+  pyNMMS keeps one policy per pair and the two readings could differ.
+
   C is a certificate: {"ax": true} | {"side": "L"|"R", "principal": F,
-  "premises": [C] or [C, C, C]}.
+  "keep": bool (optional, default false), "premises": [C] or [C, C, C]}.
+  An "ax" leaf must be an atomic sequent in the base. "keep": true selects the
+  book's rule instance whose context still contains the principal sentence
+  (in the book `Γ, A` is `Γ ∪ {A}`, so `Γ` may contain `A`).
 
   The result: {"id": ..., "derivable": bool, "cert_ok": bool or null,
   "refute_ok": bool or null, "refute_len": n or null} or
   {"id": ..., "error": "..."}. "derivable" comes from `NMMS.fastProve`, the
   non-backtracking search, which `NMMS.fastProve_iff` proves equal to
   derivability (with "engine": "backtracking", from `NMMS.prove`, proved
-  equal by `NMMS.prove_iff`); "cert_ok" comes from `NMMS.check`, which
-  `NMMS.check_sound` proves sound. For an underivable sequent the program also
-  builds a one-branch refutation (`NMMS.findRefute`, unverified) and checks it
-  with `NMMS.refute`, which `NMMS.refute_sound` proves sound: "refute_ok" is
-  that check's result and "refute_len" the branch length.
+  equal by `NMMS.prove_iff`; both together: `NMMS.reasoner_correct`);
+  "cert_ok" comes from `NMMS.check`, which `NMMS.check_sound` proves sound and
+  `NMMS.check_complete` complete. For an underivable sequent the program also
+  builds a one-branch refutation (`NMMS.findRefute`, proved to succeed on
+  every underivable sequent by `NMMS.findRefute_complete`) and checks it with
+  `NMMS.refute`, which `NMMS.refute_sound` proves sound: "refute_ok" is that
+  check's result and "refute_len" the branch length.
 
   A query with "op": "closure" asks whether a claim is in the closure of
-  initial premises (`NMMS.Closure`, `LeanNmms/Derivation.lean`):
+  initial premises under chained single-conclusion NMMS steps (`NMMS.Closure`,
+  `LeanNmms/Derivation.lean`). That is a further calculation, not NMMS
+  derivability (NMMS has no Cut), so its answer is "in_closure", never
+  "derivable":
 
     { "op": "closure", "id": <any>, "request_hash": H,
       "base": <pyNMMS base>, "initial_premises": [F, ...], "claim": F,
@@ -42,10 +64,10 @@
   of {"op", "base", "initial_premises", "claim"}; the checker recomputes it and
   refuses a mismatch. The certificate is deliberately outside the hash, so a
   changed certificate is judged by the checker, not by a checksum. The answer:
-  {"id", "request_hash" (echoed), "accepted": bool, "derivable": bool or null,
+  {"id", "request_hash" (echoed), "accepted": bool, "in_closure": bool or null,
   "reason" (when not accepted)}. "accepted" is `NMMS.checkDerivation` (proved
   sound by `NMMS.checkDerivation_sound`) or `NMMS.checkRefutation` (proved
-  sound by `NMMS.checkRefutation_sound`); "derivable" is true for an accepted
+  sound by `NMMS.checkRefutation_sound`); "in_closure" is true for an accepted
   derivation, false for an accepted refutation, and null when the certificate
   is refused (the checker then does not claim either answer).
 
@@ -123,16 +145,51 @@ def parseRobustness (j? : Option Json) : Except String (Robustness String) := do
       return .guarded { left, right, pairs }
     | k => throw s!"unknown robustness kind {k}"
 
-/-- `consequences` is required (pyNMMS's `base.schema.json`) and must be an array. -/
-def parseBase (j : Json) : Except String (List (Entry String)) := do
+/-- A parsed base: its entries and, when given, its language L_B. -/
+structure ParsedBase where
+  entries : List (Entry String)
+  language : Option (List String)
+
+/-- Every atom of a formula. -/
+def formulaAtoms : Formula String → List String
+  | .atom a => [a]
+  | .neg A => formulaAtoms A
+  | .conj A B | .disj A B | .impl A B => formulaAtoms A ++ formulaAtoms B
+
+/-- Refuse an atom outside the base's declared language (see the header). -/
+def checkLanguage (pb : ParsedBase) (what : String) (atoms : List String) :
+    Except String Unit :=
+  match pb.language with
+  | none => pure ()
+  | some L => match atoms.find? (fun a => !L.contains a) with
+    | some a => throw s!"atom {a} in {what} is not in the base's language"
+    | none => pure ()
+
+def checkFormulas (pb : ParsedBase) (what : String) (fs : List (Formula String)) :
+    Except String Unit :=
+  checkLanguage pb what (fs.flatMap formulaAtoms)
+
+/-- `consequences` is required (pyNMMS's `base.schema.json`) and must be an
+array; `language`, when present, is a list of atom names that must contain
+every atom of the entries. A pair listed twice is refused. -/
+def parseBase (j : Json) : Except String ParsedBase := do
   let cs ← match field? j "consequences" with
     | some v => (do let a ← v.getArr?; pure a.toList)
     | none => throw "base needs a \"consequences\" array"
-  cs.mapM fun e => do
+  let language ← match field? j "language" with
+    | none | some Json.null => pure none
+    | some v => some <$> strList v
+  let entries ← cs.mapM fun e => do
     let ant ← strList (← e.getObjVal? "antecedent")
     let con ← strList (← e.getObjVal? "consequent")
     let rob ← parseRobustness (field? e "robustness")
-    pure { ant, con, rob }
+    pure ({ ant, con, rob } : Entry String)
+  let pb : ParsedBase := { entries, language }
+  for e in entries do
+    checkLanguage pb "the base" (e.ant ++ e.con)
+    if (entries.filter fun e' => setEqB e.ant e'.ant && setEqB e.con e'.con).length > 1 then
+      throw s!"the base lists the pair {repr e.ant} |~ {repr e.con} more than once"
+  pure pb
 
 /-- Number of premises the rule on `φ` (left side if `left`) has; `none` for an
 atom, which is no rule at all. Matches `NMMS.check`. -/
@@ -147,6 +204,10 @@ partial def parseCert (j : Json) : Except String (Cert String) := do
   if (field? j "ax").isSome then return .ax
   let side ← (← j.getObjVal? "side").getStr?
   let φ ← parseFormula (← j.getObjVal? "principal")
+  let keep ← match field? j "keep" with
+    | none | some Json.null => pure false
+    | some (Json.bool b) => pure b
+    | some _ => throw "keep must be a boolean"
   let ps ← (← j.getObjVal? "premises").getArr?
   let cs ← ps.toList.mapM parseCert
   if let some n := ruleArity (side == "L") φ then
@@ -155,7 +216,12 @@ partial def parseCert (j : Json) : Except String (Cert String) := do
   let c1 := cs.getD 0 .ax
   let c2 := cs.getD 1 .ax
   let c3 := cs.getD 2 .ax
-  return .node (side == "L") φ c1 c2 c3
+  return .node (side == "L") φ keep c1 c2 c3
+
+/-- Every formula a certificate names. -/
+def certFormulas : Cert String → List (Formula String)
+  | .ax => []
+  | .node _ φ _ c1 c2 c3 => φ :: (certFormulas c1 ++ certFormulas c2 ++ certFormulas c3)
 
 def parseStep (j : Json) : Except String (DerivationStep String) := do
   let ps ← (← j.getObjVal? "premises").getArr?
@@ -213,19 +279,24 @@ def handleClosure (j : Json) (id : Json) : Except String Json := do
     ("base", ← j.getObjVal? "base"), ("initial_premises", ← j.getObjVal? "initial_premises"),
     ("claim", ← j.getObjVal? "claim")]
   let expected ← NMMS.Wire.digest bound
-  let reply (accepted : Bool) (derivable : Json) (reason : Option String) : Json :=
+  let reply (accepted : Bool) (inClosure : Json) (reason : Option String) : Json :=
     Json.mkObj ([("id", id), ("request_hash", given), ("accepted", Json.bool accepted),
-      ("derivable", derivable)] ++ (match reason with
+      ("in_closure", inClosure)] ++ (match reason with
         | some r => [("reason", Json.str r)]
         | none => []))
   if given != Json.str expected then
     return reply false Json.null (some "request_hash does not match the canonical hash of op, base, initial_premises and claim")
-  let B ← parseBase (← j.getObjVal? "base")
+  let pb ← parseBase (← j.getObjVal? "base")
+  let B := pb.entries
   let initial ← (← (← j.getObjVal? "initial_premises").getArr?).toList.mapM parseFormula
   let claim ← parseFormula (← j.getObjVal? "claim")
   let cj ← j.getObjVal? "certificate"
   let kind ← (← cj.getObjVal? "kind").getStr?
   let steps ← (← (← cj.getObjVal? "steps").getArr?).toList.mapM parseStep
+  checkFormulas pb "the initial premises" initial
+  checkFormulas pb "the claim" [claim]
+  checkFormulas pb "the certificate"
+    (steps.flatMap fun s => s.conclusion :: s.premises ++ certFormulas s.cert)
   match kind with
   | "derivation" =>
     if checkDerivation B initial steps claim then
@@ -233,6 +304,7 @@ def handleClosure (j : Json) (id : Json) : Except String Json := do
     else return reply false Json.null (some (rejectReason B initial steps claim))
   | "closure-refutation" =>
     let closure ← strList (← cj.getObjVal? "closure")
+    checkLanguage pb "the listed closure" closure
     let cert : ClosureRefutation String := { steps, closure }
     if checkRefutation B initial cert claim then
       return reply true (Json.bool false) none
@@ -250,10 +322,11 @@ def handle (line : String) : Json :=
         | Json.str "closure" => return ← handleClosure j id
         | Json.str "score" => return ← handleScore j id
         | v => throw s!"unknown op {v.compress}"
-      let B ← parseBase (← j.getObjVal? "base")
+      let pb ← parseBase (← j.getObjVal? "base")
       let Γ ← (← (← j.getObjVal? "antecedent").getArr?).toList.mapM parseFormula
       let Δ ← (← (← j.getObjVal? "consequent").getArr?).toList.mapM parseFormula
-      let R := baseRel B
+      checkFormulas pb "the sequent" (Γ ++ Δ)
+      let R := baseRel pb.entries
       let backtracking ← match field? j "engine" with
         | none | some Json.null => pure false
         | some (Json.str "fast") => pure false
@@ -268,7 +341,10 @@ def handle (line : String) : Json :=
       let certOk : Json ← match field? j "cert" with
         | none => pure Json.null
         | some Json.null => pure Json.null
-        | some cj => do let c ← parseCert cj; pure (Json.bool (check R c Γ Δ))
+        | some cj => do
+          let c ← parseCert cj
+          checkFormulas pb "the certificate" (certFormulas c)
+          pure (Json.bool (check R c Γ Δ))
       pure (Json.mkObj [("id", id), ("derivable", Json.bool d), ("cert_ok", certOk),
         ("refute_ok", refOk), ("refute_len", refLen)])
     match r with

@@ -6,9 +6,11 @@ Stdlib only; runs the built binary with a list argv (no shell). Checks:
     nested `neg`), a base without "consequences", a wrong-typed field
     ("unless": 5), an unknown "engine", a certificate with the wrong number of
     premises for its rule;
-  * 3 well-formed queries (same shape as the difftest corpus) still return
-    exactly the answers the binary gave before the hardening (captured from
-    the pre-change build).
+  * 3 well-formed queries (same shape as the difftest corpus) return exactly
+    the expected answers (captured from the pre-hardening build; the third
+    changed when Containment stopped being added: over the empty base
+    `p, q ⇒ q` is not an axiom, so `p ∧ q ⇒ q` is not derivable and its
+    certificate is rejected).
 
 Run (from anywhere, after `lake build`):  python3 -I difftest/malformed_test.py
 Exit status 0 only if all 9 checks pass.
@@ -61,7 +63,7 @@ error_cases = {
         []),
 }
 
-# Answers of the pre-hardening binary on these three corpus-shaped queries.
+# Expected answers on these three corpus-shaped queries (see the header).
 ok_cases = [
     (query(base={"language": ["p", "q", "r", "s"], "consequences": [
         {"antecedent": ["p"], "consequent": ["q"], "robustness": {"kind": "exact"}}]}),
@@ -73,7 +75,7 @@ ok_cases = [
            antecedent=[P, {"atom": "r"}]),
      {"cert_ok": None, "derivable": False, "id": 1, "refute_len": 0, "refute_ok": True}),
     (query(antecedent=[CONJ], cert={"side": "L", "principal": CONJ, "premises": [{"ax": True}]}),
-     {"cert_ok": True, "derivable": True, "id": 1, "refute_len": None, "refute_ok": None}),
+     {"cert_ok": False, "derivable": False, "id": 1, "refute_len": 1, "refute_ok": True}),
 ]
 
 passed = failed = 0
