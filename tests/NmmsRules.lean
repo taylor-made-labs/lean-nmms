@@ -92,6 +92,25 @@ example : Derivable (baseRel co) [impl p q, p] [q] := by decide
 example : ¬ Derivable (baseRel co) [disj p q] [p] := by decide
 example (Γ Δ : List (Formula Nat)) : Derivable containmentBase Γ Δ ↔ Valid Γ Δ :=
   containmentBase_iff_valid Γ Δ
+-- `co` is Containment for the language [p, q, r], as `coEntries`; by theorem,
+-- every classically valid sequent over p, q, r is derivable over it, and over
+-- any base with it added.
+example : co = [] ++ coEntries [0, 1, 2] := rfl
+example (Γ Δ : List (Formula Nat)) (hΓ : ∀ φ ∈ Γ, ∀ a ∈ φ.atoms, a ∈ [0, 1, 2])
+    (hΔ : ∀ φ ∈ Δ, ∀ a ∈ φ.atoms, a ∈ [0, 1, 2]) (h : Valid Γ Δ) :
+    Derivable (baseRel co) Γ Δ :=
+  supraclassical_coEntries [] [0, 1, 2] hΓ hΔ h
+example : Derivable (baseRel (pq ++ coEntries [0, 1, 2])) [] [disj p (neg p)] :=
+  supraclassical_coEntries pq [0, 1, 2] (by decide) (by decide)
+    (fun v _ => ⟨_, List.mem_singleton_self _, by simp [Formula.eval]⟩)
+example : Derivable (baseRel (pq ++ coEntries [0, 1])) [conj p (neg q), r] [conj p (neg q)] :=
+  overlap_derivable_coEntries pq [0, 1] (conj p (neg q)) (by decide) (by simp) (by simp)
+example : (baseRel (coEntries [0, 1])).ContainmentOn [0, 1] :=
+  containmentOn_coEntries [] [0, 1]
+-- Containment for [p, q] says nothing about r.
+example : ¬ Derivable (baseRel (coEntries [0, 1])) [r] [r] := by decide
+example : ¬ (baseRel (coEntries [0, 1])).Containment := fun h =>
+  absurd (h [2] [2] ⟨2, by simp, by simp⟩) (by decide)
 
 /-! ### The book's instances whose context keeps the principal sentence -/
 
@@ -116,6 +135,16 @@ example : check (baseRel empty)
 example : refute (baseRel empty) [] [p] [p] = true := by decide
 example : refute (baseRel pq) [] [p] [q] = false := by decide
 example : refute (baseRel rconj) [⟨false, conj p q, 2⟩] [] [conj p q] = true := by decide
+-- `findRefute` (what `nmms-lean` runs) returns an accepted refutation, and
+-- nothing on a derivable sequent.
+example : (match findRefute (baseRel rconj) [] [conj p q] with
+    | some c => refute (baseRel rconj) c [] [conj p q]
+    | none => false) = true := by decide
+example : (findRefute (baseRel rconj) [] [conj p q]).map List.length = some 1 := by decide
+example : (findRefute (baseRel pq) [p] [q]).isSome = false := by decide
+example : (match findRefute (baseRel empty) [p] [p] with
+    | some c => refute (baseRel empty) c [p] [p]
+    | none => false) = true := by decide
 
 /-! ### The theorems' statements, pinned -/
 
@@ -131,5 +160,39 @@ example (B : List (Entry Nat)) (Γ Δ : List (Formula Nat)) :
 example (B : List (Entry Nat)) (Γ Δ : List (Formula Nat)) :
     (∃ c, refute (baseRel B) c Γ Δ = true) ↔ ¬ Derivable (baseRel B) Γ Δ :=
   refutable_iff (baseRel_setInvariant B) Γ Δ
+example (B : List (Entry Nat)) (Γ Δ : List (Formula Nat)) (c : List (Step Nat))
+    (h : findRefute (baseRel B) Γ Δ = some c) : refute (baseRel B) c Γ Δ = true :=
+  findRefute_sound h
+example (B : List (Entry Nat)) (Γ Δ : List (Formula Nat)) (h : ¬ Derivable (baseRel B) Γ Δ) :
+    ∃ c, findRefute (baseRel B) Γ Δ = some c ∧ refute (baseRel B) c Γ Δ = true :=
+  findRefute_complete h
+-- "refute_ok" as `nmms-lean` computes it is exactly non-derivability. (Each
+-- `match` is its own auxiliary definition, so the two statements agree once
+-- the result of `findRefute` is split.)
+example (B : List (Entry Nat)) (Γ Δ : List (Formula Nat)) :
+    (match findRefute (baseRel B) Γ Δ with
+      | some c => refute (baseRel B) c Γ Δ
+      | none => false) = true ↔ ¬ Derivable (baseRel B) Γ Δ := by
+  have h := refuteOk_iff (baseRel_setInvariant B) Γ Δ
+  revert h
+  cases findRefute (baseRel B) Γ Δ <;> exact id
+example (B : List (Entry Nat)) (L : List Nat) :
+    (baseRel (B ++ coEntries L)).ContainmentOn L := containmentOn_coEntries B L
+example (R : BaseRel Nat) (L : List Nat) (hC : R.ContainmentOn L) (Γ Δ : List (Formula Nat))
+    (hΓ : ∀ φ ∈ Γ, ∀ a ∈ φ.atoms, a ∈ L) (hΔ : ∀ φ ∈ Δ, ∀ a ∈ φ.atoms, a ∈ L)
+    (h : Valid Γ Δ) : Derivable R Γ Δ :=
+  supraclassical_on hC hΓ hΔ h
+example (R : BaseRel Nat) (L : List Nat) (hC : R.ContainmentOn L) (φ : Formula Nat)
+    (Γ Δ : List (Formula Nat)) (hL : ∀ a ∈ φ.atoms, a ∈ L) (h1 : φ ∈ Γ) (h2 : φ ∈ Δ) :
+    Derivable R Γ Δ :=
+  overlap_derivable_on hC φ hL h1 h2
+example (B : List (Entry Nat)) (L : List Nat) (Γ Δ : List (Formula Nat))
+    (hΓ : ∀ φ ∈ Γ, ∀ a ∈ φ.atoms, a ∈ L) (hΔ : ∀ φ ∈ Δ, ∀ a ∈ φ.atoms, a ∈ L)
+    (h : Valid Γ Δ) : Derivable (baseRel (B ++ coEntries L)) Γ Δ :=
+  supraclassical_coEntries B L hΓ hΔ h
+example (B : List (Entry Nat)) (L : List Nat) (φ : Formula Nat) (Γ Δ : List (Formula Nat))
+    (hL : ∀ a ∈ φ.atoms, a ∈ L) (h1 : φ ∈ Γ) (h2 : φ ∈ Δ) :
+    Derivable (baseRel (B ++ coEntries L)) Γ Δ :=
+  overlap_derivable_coEntries B L φ hL h1 h2
 
 end NmmsRulesTests

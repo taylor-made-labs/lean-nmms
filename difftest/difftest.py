@@ -41,17 +41,37 @@ What each case does.
    one-branch refutation and checks it with its proved-sound refutation
    checker (`NMMS.refute`); the harness counts accepted, rejected and
    missing refutations.
-6. Invertibility probe: for each complex sentence on either side, compare the
-   conclusion's derivability with the derivability of all that rule's
-   premises (by pyNMMS). Invertibility is what a short "not derivable"
-   certificate would need (see README, "Certificates").
+6. Invertibility probes: for each complex sentence on either side, compare
+   the conclusion's derivability with the derivability of all that rule's
+   premises (computed by `premises`).
+   a. NMMS over B, by Lean: each premise is sent to nmms-lean over B, with
+      no certificate, and compared with Lean's verdict on the conclusion
+      over B. Every rule is invertible (`NMMS.invertibility`), so they must
+      agree ("nmms_invert_checks", "nmms_invert_fail", records
+      "nmms-invertibility"). Each distinct premise is asked once per base.
+   b. By pyNMMS (the shared reasoner), which tests invertibility over B plus
+      Containment, not over B ("pynmms_invert_checks", "pynmms_invert_fail",
+      records "pynmms-invertibility").
+   Invertibility is what makes the one-branch refutations of step 5 sound.
+
+The summary. "pynmms_derivable" and "pynmms_underivable" count pyNMMS's
+verdicts over B, i.e. derivability over B plus Containment; "nmms_derivable"
+counts the cases Lean derives over B itself, i.e. NMMS derivability from the
+supplied base. "disagree" compares pyNMMS with Lean over B+CO, "ref_disagree"
+Lean over B with the reference, and "containment_changed" counts the cases
+where pyNMMS's verdict and Lean's over B differ. Certificates ("certs_*") are
+checked over B+CO.
 
 Run (from the repository root, after `lake build`):
   <pyNMMS venv>/bin/python -I difftest/difftest.py [--cases N] [--seed S]
 It prints a summary (counts and timings) and writes every disagreement,
-timeout or failed probe to difftest/disagreements.jsonl. A Lean query that
-takes longer than --timeout seconds is recorded as "lean-timeout" (not as a
-disagreement) and the Lean process is restarted.
+timeout or failed probe to difftest/disagreements.jsonl. A case with a Lean
+query that takes longer than --timeout seconds is counted in "lean_timeout"
+and recorded as "lean-timeout" (not as a disagreement): "timed_out" names the
+queries ("B+CO", "B", or "probe" with the probe queries under "probe"),
+"lean_ant"/"lean_con" are the sides as sent and "cert_nodes" is the size of
+the certificate sent over B+CO. The Lean process is then restarted.
+difftest/rerun_timeouts.py replays such queries with a longer limit.
 """
 
 from __future__ import annotations
@@ -143,6 +163,15 @@ def to_json(t):
     if t[0] == "neg":
         return {"neg": to_json(t[1])}
     return {t[0]: [to_json(t[1]), to_json(t[2])]}
+
+
+def sides_json(seq: Sequent) -> tuple[list, list]:
+    """The two sides of a pyNMMS sequent as formula trees for nmms-lean
+    (atoms, then complex sentences in text order)."""
+    def side(atoms, complex_):
+        return ([to_json(("atom", a)) for a in sorted(atoms)]
+                + [to_json(tree_of_sentence(s)) for s in sorted(complex_, key=str)])
+    return side(seq.gamma_atoms, seq.gamma_complex), side(seq.delta_atoms, seq.delta_complex)
 
 
 # --- certificates from pyNMMS traces ---------------------------------------
@@ -270,12 +299,14 @@ def main() -> int:
         times["lean_total_s"] += dt
         return out
 
-    stats = dict(cases=0, derivable=0, underivable=0, disagree=0, cache_disagree=0,
-                 parse_mismatch=0, lean_error=0, certs_built=0, certs_missing=0,
-                 certs_ok=0, certs_rejected=0, cert_nodes=0, invert_checks=0,
-                 invert_fail=0, lean_timeout=0, refute_ok=0, refute_rejected=0,
-                 refute_missing=0, refute_steps=0, base_derivable=0, ref_disagree=0,
-                 containment_changed=0)
+    # "pynmms_*" counts are pyNMMS's verdicts (over B plus Containment);
+    # "nmms_derivable" is Lean over B, NMMS derivability from the supplied base.
+    stats = dict(cases=0, pynmms_derivable=0, pynmms_underivable=0, nmms_derivable=0,
+                 disagree=0, cache_disagree=0, parse_mismatch=0, lean_error=0,
+                 certs_built=0, certs_missing=0, certs_ok=0, certs_rejected=0, cert_nodes=0,
+                 pynmms_invert_checks=0, pynmms_invert_fail=0, nmms_invert_checks=0,
+                 nmms_invert_fail=0, lean_timeout=0, refute_ok=0, refute_rejected=0,
+                 refute_missing=0, refute_steps=0, ref_disagree=0, containment_changed=0)
     bad = []
     case_id = 0
     while case_id < args.cases:
@@ -284,6 +315,7 @@ def main() -> int:
         bdict = base.to_dict()
         bdict_co = ref.with_containment(bdict)
         ref_prove = ref.make_prover(ref.Base(bdict))
+        over_b: dict = {}   # Lean's verdicts over B on probe premises (step 6a)
         for _ in range(args.per_base):
             if case_id >= args.cases:
                 break
@@ -318,26 +350,33 @@ def main() -> int:
             rng.shuffle(lcon)
             q = {"id": case_id, "base": bdict_co, "antecedent": [to_json(t) for t in lant],
                  "consequent": [to_json(t) for t in lcon]}
-            cert = None
+            cert, nodes = None, None
+            seq = Sequent.from_strings(ant_s, con_s)
             if py:
-                root = Sequent.from_strings(ant_s, con_s)
-                cert = cert_from_trace(root, res.entries)
+                cert = cert_from_trace(seq, res.entries)
                 if cert is None:
                     stats["certs_missing"] += 1
                     bad.append({"id": case_id, "kind": "cert-missing", "ant": ant_s, "con": con_s})
                 else:
+                    nodes = cert_size(cert)
                     stats["certs_built"] += 1
-                    stats["cert_nodes"] += cert_size(cert)
+                    stats["cert_nodes"] += nodes
                     q["cert"] = cert
             out = ask_lean(q)
             # The same sequent over B itself (no Containment): NMMS proper.
             out_b = ask_lean({**q, "base": bdict, "cert": None})
             stats["cases"] += 1
-            if out is None or out_b is None:
+            # What difftest/rerun_timeouts.py needs to replay the timed-out queries
+            # (it rebuilds the certificate from pyNMMS rather than reading it).
+            timeout_rec = {"id": case_id, "kind": "lean-timeout",
+                           "timed_out": [k for k, o in (("B+CO", out), ("B", out_b)) if o is None],
+                           "ant": ant_s, "con": con_s,
+                           "lean_ant": q["antecedent"], "lean_con": q["consequent"],
+                           "connectives": res.connectives, "pynmms": py,
+                           "pynmms_nodes": res.nodes, "cert_nodes": nodes, "base": bdict}
+            if timeout_rec["timed_out"]:
                 stats["lean_timeout"] += 1
-                bad.append({"id": case_id, "kind": "lean-timeout", "ant": ant_s,
-                            "con": con_s, "connectives": res.connectives,
-                            "pynmms": py, "pynmms_nodes": res.nodes, "base": bdict})
+                bad.append(timeout_rec)
                 continue
             if "error" in out or "error" in out_b:
                 stats["lean_error"] += 1
@@ -346,14 +385,14 @@ def main() -> int:
                 continue
             want_b = ref_prove(frozenset(ref.freeze(to_json(t)) for t in lant),
                                frozenset(ref.freeze(to_json(t)) for t in lcon))
-            stats["base_derivable"] += out_b["derivable"]
+            stats["nmms_derivable"] += out_b["derivable"]
             if out_b["derivable"] != want_b:
                 stats["ref_disagree"] += 1
                 bad.append({"id": case_id, "kind": "reference", "ant": ant_s, "con": con_s,
                             "reference": want_b, "lean": out_b["derivable"], "base": bdict})
             if out_b["derivable"] != py:
                 stats["containment_changed"] += 1
-            stats["derivable" if py else "underivable"] += 1
+            stats["pynmms_derivable" if py else "pynmms_underivable"] += 1
             if out["derivable"] != py:
                 stats["disagree"] += 1
                 bad.append({"id": case_id, "kind": "verdict", "ant": ant_s, "con": con_s,
@@ -381,16 +420,50 @@ def main() -> int:
                     stats["refute_rejected"] += 1
                     bad.append({"id": case_id, "kind": "refute-rejected", "ant": ant_s,
                                 "con": con_s, "base": b})
-            # Invertibility probe, by pyNMMS.
-            seq = Sequent.from_strings(ant_s, con_s)
+            # Invertibility probe of NMMS over B, by Lean (step 6a).
+            probe_timeouts = []
+            for side, group in (("L", seq.gamma_complex), ("R", seq.delta_complex)):
+                for s in sorted(group, key=str):
+                    verdicts = []
+                    for p in premises(seq, side, s):
+                        key = (frozenset(p.gamma_atoms), p.gamma_complex,
+                               frozenset(p.delta_atoms), p.delta_complex)
+                        if key not in over_b:
+                            pant, pcon = sides_json(p)
+                            o = ask_lean({"id": case_id, "base": bdict,
+                                          "antecedent": pant, "consequent": pcon})
+                            if o is None:
+                                probe_timeouts.append({"side": side, "principal": str(s),
+                                                       "lean_ant": pant, "lean_con": pcon})
+                            elif "error" in o:
+                                stats["lean_error"] += 1
+                                bad.append({"id": case_id, "kind": "lean-error",
+                                            "query": "probe", "error": o["error"]})
+                            else:
+                                over_b[key] = o["derivable"]
+                        verdicts.append(over_b.get(key))
+                    if None in verdicts:
+                        continue
+                    prem = all(verdicts)
+                    stats["nmms_invert_checks"] += 1
+                    if prem != out_b["derivable"]:
+                        stats["nmms_invert_fail"] += 1
+                        bad.append({"id": case_id, "kind": "nmms-invertibility", "ant": ant_s,
+                                    "con": con_s, "side": side, "principal": str(s),
+                                    "conclusion": out_b["derivable"], "premises": prem,
+                                    "base": bdict})
+            if probe_timeouts:
+                stats["lean_timeout"] += 1
+                bad.append({**timeout_rec, "timed_out": ["probe"], "probe": probe_timeouts})
+            # Invertibility probe by pyNMMS, i.e. over B plus Containment (step 6b).
             for side, group in (("L", seq.gamma_complex), ("R", seq.delta_complex)):
                 for s in group:
                     prem = all(shared.derives_sequent(p).derivable
                                for p in premises(seq, side, s))
-                    stats["invert_checks"] += 1
+                    stats["pynmms_invert_checks"] += 1
                     if prem != py:
-                        stats["invert_fail"] += 1
-                        bad.append({"id": case_id, "kind": "invertibility", "ant": ant_s,
+                        stats["pynmms_invert_fail"] += 1
+                        bad.append({"id": case_id, "kind": "pynmms-invertibility", "ant": ant_s,
                                     "con": con_s, "side": side, "principal": str(s),
                                     "conclusion": py, "premises": prem, "base": bdict})
     lean.stdin.close()

@@ -61,21 +61,72 @@ def atoms(t):
 
 # --- the base -----------------------------------------------------------------
 
+def _atoms(v, what: str) -> frozenset:
+    """A list of atom names (a string or any other value is refused)."""
+    if not isinstance(v, list) or not all(isinstance(a, str) for a in v):
+        raise ValueError(f"{what} must be a list of strings")
+    return frozenset(v)
+
+
+def _robustness(rob):
+    """An entry's "robustness", read and refused as nmms-lean does (see the
+    header of Main.lean; pyNMMS's `Robustness.from_json` accepts every value
+    accepted here and reads it the same way, and also reads a few refused
+    here, which that header lists, among them a string or an object where a
+    list of atoms is expected): absent or null is EXACT, a
+    string is a kind, an object has "kind" (default "exact") and "unless"
+    (absent or null: no defeaters, otherwise an object, type-checked for
+    every kind). An exclusion pair with no atom, and defeaters on an EXACT or
+    MONOTONE entry, are refused. Returns (kind, (left, right, pairs))."""
+    if rob is None:
+        kind, unless = "exact", None
+    elif isinstance(rob, str):
+        kind, unless = rob, None
+    elif isinstance(rob, dict):
+        kind, unless = rob.get("kind", "exact"), rob.get("unless")
+        if not isinstance(kind, str):
+            raise ValueError("robustness kind must be a string")
+    else:
+        raise ValueError("robustness must be a string or an object")
+    if unless is None:
+        unless = {}
+    if not isinstance(unless, dict):
+        raise ValueError("unless must be an object")
+    left = _atoms(unless.get("antecedent", []), "unless.antecedent")
+    right = _atoms(unless.get("consequent", []), "unless.consequent")
+    if not isinstance(unless.get("pairs", []), list):
+        raise ValueError("unless.pairs must be an array")
+    pairs = []
+    for p in unless.get("pairs", []):
+        if not isinstance(p, dict):
+            raise ValueError("unless.pairs entry must be an object")
+        x = _atoms(p.get("antecedent", []), "unless.pairs antecedent")
+        y = _atoms(p.get("consequent", []), "unless.pairs consequent")
+        if not x and not y:
+            raise ValueError("an exclusion pair needs at least one atom")
+        pairs.append((x, y))
+    if kind not in ("exact", "monotone", "guarded"):
+        raise ValueError(f"unknown robustness kind {kind}")
+    if kind != "guarded" and (left or right or pairs):
+        raise ValueError(f"defeaters (unless) are only meaningful for guarded entries, not {kind}")
+    return kind, (left, right, tuple(pairs))
+
+
 class Base:
-    """The base relation of a pyNMMS base dict, on pairs of sets of atom names."""
+    """The base relation of a pyNMMS base dict, on pairs of sets of atom names.
+    A malformed entry raises ValueError (see `_robustness`)."""
 
     def __init__(self, bdict: dict):
         self.entries = []
+        if not isinstance(bdict.get("consequences"), list):
+            raise ValueError('base needs a "consequences" array')
         for e in bdict["consequences"]:
-            rob = e.get("robustness") or {"kind": "exact"}
-            if isinstance(rob, str):
-                rob = {"kind": rob}
-            kind = rob.get("kind", "exact")
-            unless = rob.get("unless") or {}
-            guard = (frozenset(unless.get("antecedent", ())), frozenset(unless.get("consequent", ())),
-                     tuple((frozenset(x.get("antecedent", ())), frozenset(x.get("consequent", ())))
-                           for x in unless.get("pairs", ())))
-            self.entries.append((frozenset(e["antecedent"]), frozenset(e["consequent"]), kind, guard))
+            if not isinstance(e, dict):
+                raise ValueError("a base entry must be an object")
+            ant = _atoms(e.get("antecedent"), "antecedent")
+            con = _atoms(e.get("consequent"), "consequent")
+            kind, guard = _robustness(e.get("robustness"))
+            self.entries.append((ant, con, kind, guard))
 
     def contains(self, X: frozenset, Y: frozenset) -> bool:
         for ant, con, kind, (left, right, pairs) in self.entries:

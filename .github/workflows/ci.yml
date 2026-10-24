@@ -53,7 +53,8 @@ jobs:
     # Compares the built executable with pyNMMS 0.15.1 (pinned, hash-checked
     # in difftest/requirements.txt) on generated cases: pyNMMS over a base
     # against Lean over that base plus Containment (pyNMMS adds Containment),
-    # and Lean over the base itself against difftest/nmms_reference.py.
+    # Lean over the base itself against difftest/nmms_reference.py, and rule
+    # invertibility of NMMS over the base (by Lean) and of pyNMMS.
     needs: lean
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -78,7 +79,7 @@ jobs:
           s = json.load(open("diff.out"))
           bad = {k: s[k] for k in ("disagree", "cache_disagree", "parse_mismatch", "lean_error",
                                    "certs_rejected", "certs_missing", "refute_rejected",
-                                   "refute_missing", "invert_fail", "ref_disagree",
-                                   "lean_timeout") if s[k]}
+                                   "refute_missing", "nmms_invert_fail", "pynmms_invert_fail",
+                                   "ref_disagree", "lean_timeout") if s[k]}
           assert not bad, bad
           PY

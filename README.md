@@ -34,16 +34,16 @@ licence) is a Python reasoner for NMMS. A base entry is `EXACT` (any added
 premise defeats it), `MONOTONE` (it survives any addition) or `GUARDED` (it
 survives any addition except named defeaters). This project reads pyNMMS
 0.15.1's base format and compares the two on generated cases. pyNMMS differs
-from the chapter in one known way: its axiom test also accepts every sequent
-whose sides share an atom or a complex sentence, i.e. it adds Containment to
-the base. Its verdict over a base B is therefore NMMS derivability over B
-plus Containment, not over B (see "Differential test").
+from NMMS over the supplied base in one known way: its axiom test also
+accepts every sequent whose sides share an atom or a complex sentence, i.e.
+it adds Containment to the base. Its verdict over a base B is therefore NMMS
+derivability over B plus Containment, not over B (see "Differential test").
 
 ## What is proved
 
 Every theorem below is in namespace `NMMS`. Outside comments, no source file
 contains `sorry`, `admit`, `native_decide`, `extern` or `axiom`; each of the
-1,991 constants of `Main` and `LeanNmms` depends only on `propext`,
+2,044 constants of `Main` and `LeanNmms` depends only on `propext`,
 `Classical.choice` and `Quot.sound` (`tests/AllConstantsAxioms.lean`).
 "Derivable" means derivable in the Lean definition `Derivable`
 (Calculus.lean), which is the specification: the chapter's axiom clause and
@@ -78,18 +78,27 @@ that (each rule takes its context explicitly). Nothing else is built in.
   one, `check_complete`; together `certifiable_iff` (Certificate.lean). A
   one-branch "not derivable" certificate that `refute` accepts shows
   non-derivability, `refute_sound`; every underivable sequent has one,
-  `refute_complete`, `refutable_iff`; and `findRefute`, which `nmms-lean`
-  runs, finds one, `findRefute_complete` (Refute.lean).
+  `refute_complete`, `refutable_iff`; an accepted one is no longer than the
+  connective count, `refute_length`. `findRefute`, which `nmms-lean` runs,
+  returns only refutations that `refute` accepts, `findRefute_sound`, and
+  returns one on every underivable sequent, `findRefute_complete`; so the
+  program's `"refute_ok"` is `true` exactly on the underivable sequents,
+  `refuteOk_iff` (Refute.lean).
 - Containment and classical logic, as theorems about bases that supply
-  Containment (`BaseRel.Containment`), never as defaults: over such a base a
-  shared sentence makes a sequent derivable, `overlap_derivable`
-  (Containment.lean), and every classically valid sequent is derivable,
+  Containment, never as defaults. In two forms: `BaseRel.Containment` (every
+  atom of the atom type) and `BaseRel.ContainmentOn L` (the atoms of a
+  language `L`). The MONOTONE entries `a |~ a`, one per `a ∈ L`
+  (`coEntries L`), give any base the second, `containmentOn_coEntries`
+  (Base.lean); over `String` or `Nat` atoms they never give the first. Over
+  a base with `ContainmentOn L`, a sentence over `L` on both sides makes a
+  sequent derivable, `overlap_derivable_on` (Containment.lean), and every
+  classically valid sequent over `L` is derivable, `supraclassical_on`; for
+  the base `B ++ coEntries L` these are `overlap_derivable_coEntries` and
+  `supraclassical_coEntries`. The global forms are `overlap_derivable` and
   `supraclassical`. Every derivable sequent is classically valid when every
-  base sequent is, `classical_sound`; over the base of Containment instances
-  the derivable sequents are exactly the valid ones,
-  `containmentBase_iff_valid` (Classical.lean). The MONOTONE entries
-  `a |~ a` supply Containment for the atoms `a`, `baseRel_containment`
-  (Base.lean).
+  base sequent is, `classical_sound`; over the base of all Containment
+  instances the derivable sequents are exactly the valid ones,
+  `containmentBase_iff_valid` (Classical.lean).
 - Weakening fails: `weakening_fails`, with the instances `pq_exact_derives`,
   `pq_exact_not_weakened` and `pq_exact_not_weakened_neg` for the base
   `{p |~ q}`. `pq_monotone_weakened`: a `MONOTONE` entry keeps `p, r ⇒ q`.
@@ -98,8 +107,10 @@ that (each rule takes its context explicitly). Nothing else is built in.
   `excluded_middle_not_derived`, `excluded_middle_with_rr`: no Containment
   is added (Weakening.lean).
 - Ordered derivations from initial premises (a further calculation, not NMMS
-  derivability: NMMS has no Cut): `Closure B Γ₀` is the set of sentences
-  reachable from `Γ₀` by chained single-conclusion NMMS steps over base `B`.
+  derivability: NMMS has no Cut, and `Closure` also contains its initial
+  premises and lets a step use any subset of what has been reached):
+  `Closure B Γ₀` is the set of sentences reachable from `Γ₀` by chained
+  single-conclusion NMMS steps over base `B`.
   An accepted derivation puts the claim in it, `checkDerivation_sound`; an
   accepted closure refutation puts it outside and every atom it lists inside,
   `checkRefutation_sound`, via `valuation_sound` (every rule preserves truth
@@ -143,7 +154,14 @@ The base's `language`, when given, must contain every atom of the base and
 of the query (the base is a relation on sets of atoms of that language); a
 query with another atom gets `{"error": ...}` rather than an answer. Without
 `language`, the atoms that occur are the language. A base that lists the
-same pair twice is refused (pyNMMS keeps one policy per pair).
+same pair twice is refused (pyNMMS keeps one policy per pair), and so is a
+robustness value pyNMMS refuses: defeaters (`unless`) on an EXACT or
+MONOTONE entry, or an exclusion pair with no atoms. A formula object must
+have exactly one key, and a certificate node must be `{"ax": true}` or a rule
+node with `"side"` `"L"` or `"R"`. A line with an unpaired UTF-16 surrogate
+escape (such as a lone `\udc80`) is refused before parsing, since the JSON
+reader would turn distinct such names into one character. In each case the
+program answers about the base and sequent as written or not at all.
 
 Two further request kinds, `"op": "closure"` and `"op": "score"`, check the
 closure certificates and the ground and entitlement certificates above. Both
@@ -196,8 +214,10 @@ Containment (a non-atomic leaf that pyNMMS accepted by its shared-sentence
 shortcut is expanded into its full decomposition, which Lean checks leaf by
 leaf); Lean over B itself agrees with `difftest/nmms_reference.py`, a small
 stdlib implementation of the chapter's rules; every Lean "not derivable" has
-an accepted refutation; and an invertibility probe agrees (for each complex
-sentence, the conclusion is derivable exactly when the rule's premises are).
+an accepted refutation; and two invertibility probes agree (for each complex
+sentence, the conclusion is derivable exactly when all of its rule's
+premises are): one on pyNMMS, i.e. over B plus Containment, and one on
+`nmms-lean` over B itself (the theorem `invertibility` proves the latter).
 `containment_changed` counts the cases where pyNMMS's added Containment
 changes the verdict.
 
@@ -205,13 +225,14 @@ Recorded results (`difftest/summary-*.json`); both runs have 0 disagreements
 with pyNMMS (over B plus Containment), 0 disagreements with the reference
 (over B), 0 cache disagreements, 0 parser mismatches and 0 Lean errors:
 
-| Summary file | Seed, depth, width | Cases | Derivable over B+CO (pyNMMS) | Derivable over B | Containment changed the verdict | Certificates accepted | Refutations accepted | Invertibility failures | Lean timeouts |
-|---|---|---|---|---|---|---|---|---|---|
-| `summary-main-fast.json` | 20261012, 3, 3 | 5,000 | 2,280 | 723 | 1,557 | 2,280 of 2,280 | 6,997 of 6,997 | 0 of 7,377 | 0 |
-| `summary-deep-fast.json` | 7, 4, 4 | 2,000 | 1,151 | 263 | 888 | 1,151 of 1,151 | 2,586 of 2,586 | 0 of 4,180 | 0 |
+| Summary file | Seed, depth, width | Cases | Derivable over B+CO (pyNMMS, `pynmms_derivable`) | NMMS-derivable over B (`nmms_derivable`) | Containment changed the verdict | Certificates accepted | Refutations accepted | Invertibility failures, pyNMMS (B+CO) | Invertibility failures, NMMS (B) | Lean timeouts |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `summary-main-fast.json` | 20261012, 3, 3 | 5,000 | 2,280 | 723 | 1,557 | 2,280 of 2,280 | 6,997 of 6,997 | 0 of 7,377 | 0 of 7,377 | 0 |
+| `summary-deep-fast.json` | 7, 4, 4 | 2,000 | 1,151 | 263 | 888 | 1,151 of 1,151 | 2,586 of 2,586 | 0 of 4,180 | 0 of 4,180 | 0 |
 
 The deep run was made with `--timeout 60`; its slowest Lean answer (checking
-an expanded pyNMMS certificate) took 19.4 s. Not covered: pyNMMS's sentence
+an expanded pyNMMS certificate) took 20.4 s. `difftest/rerun_timeouts.py`
+replays a recorded timeout exactly (the same base, certificate and limits). Not covered: pyNMMS's sentence
 parser (trees are sent), `max_depth`, ontology and RDF bases, atom names
 beyond plain identifiers.
 
@@ -223,10 +244,10 @@ then:
 
     lake build                                    # library and .lake/build/bin/nmms-lean
     lake env lean Axioms.lean                     # prints the axioms each main theorem uses
-    lake env lean tests/AllConstantsAxioms.lean   # prints FIXES_AXIOMS_OK 1991 constants
+    lake env lean tests/AllConstantsAxioms.lean   # prints FIXES_AXIOMS_OK 2044 constants
     lake env lean tests/NmmsRules.lean            # kernel examples of the chapter's rules
     lake env lean tests/FixesDerivation.lean      # kernel examples (also FixesGround.lean)
-    python3 -I difftest/malformed_test.py         # 9 input-hardening checks
+    python3 -I difftest/malformed_test.py         # 29 input-hardening checks
     python3 -B -m unittest -v tests.test_nmms_rules   # rules vs. the stdlib reference
 
 Differential test (see "Differential test"): `python3 -m venv VENV`, then
@@ -247,13 +268,14 @@ the kernel examples, the JSON entry point, a source scan and the axiom audit.
 - NMMS takes its axioms from the base as supplied. pyNMMS's documentation
   describes the chapter's material bases as obeying Containment; this
   library neither adds nor requires that, and a base that should obey it
-  must say so (MONOTONE `a |~ a` entries). The theorems that need it take it
-  as a hypothesis.
+  must say so (MONOTONE `a |~ a` entries, `coEntries`). The theorems that
+  need it take it as a hypothesis (`ContainmentOn L` for sequents over `L`).
 - `EXACT`/`MONOTONE`/`GUARDED` are pyNMMS's way of describing which atomic
   sequents are in the base; `baseRel` (Base.lean) fixes that reading, and
   NMMS uses the resulting set of atomic sequents as its axioms. The
-  `language` check and the duplicate-pair check are in the unverified JSON
-  shell.
+  `language`, duplicate-pair, robustness, surrogate and strict-parsing checks
+  are in the unverified JSON shell; the shell refuses a few robustness values
+  that pyNMMS reads leniently (listed in the `Main.lean` header).
 - `Closure` is monotone: a step may use any subset of what is reached, so a
   `GUARDED` entry's defeater among the initial premises does not block a step
   whose premises leave it out. pyNMMS's whole-set rounds can reach fewer atoms

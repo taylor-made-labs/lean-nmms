@@ -10,10 +10,12 @@
   * GUARDED: MONOTONE unless `Γ` meets `left`, `Δ` meets `right`, or for some
     exclusion pair `⟨x, y⟩`, `x ⊆ Γ` and `y ⊆ Δ`.
 
-  pyNMMS normalises policies (folds singleton exclusions into `left`/`right`,
-  turns a GUARDED policy with no defeaters into MONOTONE, rejects an empty
-  exclusion pair). The first two do not change which sequents match, so they
-  are not modelled; the differential test never generates an empty pair.
+  pyNMMS normalises policies: it folds singleton exclusions into
+  `left`/`right` and turns a GUARDED policy with no defeaters into MONOTONE.
+  Neither changes which sequents match, so neither is modelled. pyNMMS also
+  rejects an empty exclusion pair and defeaters on an EXACT or MONOTONE
+  entry; `nmms-lean` refuses both when reading JSON, so the model never sees
+  them (here an EXACT or MONOTONE entry has no defeaters at all).
   pyNMMS keeps one policy per pair (re-adding replaces it); the test harness
   sends Lean the base's own `to_dict()` serialisation, which has one entry per
   pair (`nmms-lean` refuses a base that lists a pair twice).
@@ -21,9 +23,18 @@
   `baseRel B` is the whole base: NMMS takes its axioms from it and from
   nowhere else. pyNMMS's `is_axiom` also accepts every atomic sequent whose
   sides share an atom ("Ax1", Containment); that is *not* part of `baseRel`
-  or of the calculus. To give a base Containment, supply it: the MONOTONE
-  entries `a |~ a`, one per atom `a`, contribute exactly the atomic sequents
-  whose sides share an atom (`baseRel_containment`).
+  or of the calculus. To give a base Containment, supply it for a language
+  `L`: `coEntries L`, the MONOTONE entries `a |~ a`, one per `a ∈ L`,
+  contributes exactly the atomic sequents whose sides share an atom of `L`
+  (`baseRel_containment`), so `B ++ coEntries L` obeys Containment for the
+  atoms of `L` whatever `B` is (`containmentOn_coEntries`). Over that base
+  every classically valid sequent whose atoms are in `L` is derivable, and so
+  is every sequent whose sides share a sentence over `L`
+  (`supraclassical_coEntries`, `overlap_derivable_coEntries`,
+  `LeanNmms.Classical`). Nothing is claimed for atoms outside `L`: in general
+  that base need not obey `BaseRel.Containment`, which asks for every atom of
+  `α`, and over `String` or `Nat` atoms `coEntries L` alone never does, since
+  `b ⇒ b` is missing for every atom `b ∉ L` (`baseRel_containment`).
 -/
 import LeanNmms.Calculus
 
@@ -115,12 +126,29 @@ theorem baseRel_setInvariant (B : List (Entry α)) : (baseRel B).SetInvariant :=
       rw [subsetB_congr r1 ha, subsetB_congr r2 hb]
     rw [e1, e2, e3]
 
+/-- Containment for the atoms of `L`, as pyNMMS entries: a MONOTONE `a |~ a`
+for each `a ∈ L`. -/
+def coEntries (L : List α) : List (Entry α) :=
+  L.map fun a => { ant := [a], con := [a], rob := .monotone }
+
+/-- The base of two lists of entries contains what either contains. -/
+theorem baseRel_append (B B' : List (Entry α)) (X Y : List α) :
+    baseRel (B ++ B') X Y = (baseRel B X Y || baseRel B' X Y) := by
+  simp [baseRel, List.any_append]
+
 /-- MONOTONE `a |~ a` entries, one per atom of `L`, supply Containment for
 the atoms of `L` and nothing else. -/
 theorem baseRel_containment (L : List α) (X Y : List α) :
-    baseRel (L.map fun a => { ant := [a], con := [a], rob := .monotone }) X Y = true ↔
-      ∃ a ∈ L, a ∈ X ∧ a ∈ Y := by
-  simp [baseRel, Entry.matches, subsetB]
+    baseRel (coEntries L) X Y = true ↔ ∃ a ∈ L, a ∈ X ∧ a ∈ Y := by
+  simp [coEntries, baseRel, Entry.matches, subsetB]
+
+/-- **Containment for `L`, supplied in the base**: any base `B` with the
+entries `coEntries L` added obeys Containment for the atoms of `L`. -/
+theorem containmentOn_coEntries (B : List (Entry α)) (L : List α) :
+    (baseRel (B ++ coEntries L)).ContainmentOn L := by
+  intro X Y h
+  rw [baseRel_append, Bool.or_eq_true]
+  exact Or.inr ((baseRel_containment L X Y).mpr h)
 
 /-- Hence, over a pyNMMS base, NMMS derivability depends only on the sets. -/
 theorem derivable_congr_base (B : List (Entry α)) {Γ Δ Γ' Δ' : List (Formula α)}

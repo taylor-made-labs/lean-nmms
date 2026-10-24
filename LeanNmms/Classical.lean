@@ -9,25 +9,37 @@
   * over every base, everything it derives is classically valid as soon as
     the base's own sequents are (`valuation_sound`, for one valuation at a
     time);
-  * over a base that obeys Containment it derives every classically valid
-    sequent (supraclassicality; earlier versions of this file cited it as the
-    book's Fact 2), `supraclassical`. The hypothesis is needed: it fails over
+  * over a base that obeys Containment for the atoms of a language `L`
+    (`BaseRel.ContainmentOn L`) it derives every classically valid sequent
+    whose atoms are all in `L` (supraclassicality; earlier versions of this
+    file cited it as the book's Fact 2), `supraclassical_on`; over a base
+    that obeys it for every atom (`BaseRel.Containment`), every classically
+    valid sequent, `supraclassical`. The hypothesis is needed: it fails over
     the empty base;
-  * so over the base whose only consequences are the Containment instances
-    (`containmentBase`) it derives exactly the classically valid sequents,
-    `containmentBase_iff_valid`.
+  * a finite pyNMMS base supplies the first form: over `B ++ coEntries L`
+    (any `B` plus a MONOTONE `a |~ a` per `a ∈ L`, `LeanNmms.Base`), every
+    classically valid sequent whose atoms are in `L` is derivable,
+    `supraclassical_coEntries`, and so is every sequent whose sides share a
+    sentence over `L`, `overlap_derivable_coEntries`;
+  * over the base whose only consequences are the Containment instances
+    (`containmentBase`, for every atom) it derives exactly the classically
+    valid sequents, `containmentBase_iff_valid`.
 
   Classical validity is the multi-succedent reading: every Boolean valuation
   that makes all of `Γ` true makes some member of `Δ` true.
 
   Proof idea. Supraclassicality uses the decomposition principle
-  `derivable_of_preserved` with "classically valid" as the preserved property:
-  each rule's premises are valid when its conclusion is (the third premises
-  included), and a valid atomic sequent must share an atom, so it is in a base
-  that obeys Containment. Soundness is induction on derivations: each rule
-  preserves truth under a valuation.
+  `derivable_of_preserved` with "classically valid, and every atom in `L`" as
+  the preserved property: each rule's premises are valid when its conclusion
+  is (the third premises included), their sentences are members of the
+  conclusion's sides or parts of its principal sentence, and a valid atomic
+  sequent must share an atom, here one of `L`, so it is in a base that obeys
+  Containment for `L`. `supraclassical` is the case `L` = the sequent's atoms.
+  Soundness is induction on derivations: each rule preserves truth under a
+  valuation.
 -/
 import LeanNmms.Containment
+import LeanNmms.Base
 
 namespace NMMS
 
@@ -88,24 +100,54 @@ theorem valid_atomic_overlap {Γ Δ : List (Formula α)} (hg : allAtomic Γ = tr
   obtain ⟨b, rfl⟩ := isAtom_iff.mp (hd ψ hψ)
   exact ⟨b, by simpa [Formula.eval] using ht, hψ⟩
 
-/-- **Supraclassicality, over a base that obeys Containment.** Every
-classically valid sequent is derivable. (Without Containment in the base this
-fails: over the empty base nothing is derivable.) -/
-theorem supraclassical {R : BaseRel α} (hC : R.Containment) {Γ Δ : List (Formula α)}
-    (h : Valid Γ Δ) : Derivable R Γ Δ := by
-  refine derivable_of_preserved R Valid ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_
-    (measure Γ Δ + 1) Γ Δ (by omega) h
-  · intro Γ Δ hg hd hv
+/-- Every atom of every sentence of `φ :: l` is in `L` if it holds for `φ`
+and for `l`. -/
+theorem atomsIn_cons {L : List α} {φ : Formula α} {l : List (Formula α)}
+    (h1 : ∀ a ∈ φ.atoms, a ∈ L) (h2 : ∀ ψ ∈ l, ∀ a ∈ ψ.atoms, a ∈ L) :
+    ∀ ψ ∈ φ :: l, ∀ a ∈ ψ.atoms, a ∈ L := by
+  intro ψ hψ
+  rcases List.mem_cons.mp hψ with rfl | hψ
+  · exact h1
+  · exact h2 ψ hψ
+
+theorem atomsIn_rest {L : List α} {φ : Formula α} {l : List (Formula α)}
+    (h : ∀ ψ ∈ l, ∀ a ∈ ψ.atoms, a ∈ L) : ∀ ψ ∈ rest l φ, ∀ a ∈ ψ.atoms, a ∈ L :=
+  fun ψ hψ => h ψ (mem_rest.mp hψ).1
+
+/-- Closes "every atom of every sentence of this premise side is in `L`": a
+premise side is made of a side of the conclusion (perhaps minus the principal
+sentence) and parts of the principal sentence, for which the context must
+already have that fact. -/
+macro "atoms_in" : tactic =>
+  `(tactic| (repeat' (first | assumption | apply atomsIn_cons | apply atomsIn_rest)))
+
+/-- **Supraclassicality, over a base that obeys Containment for the atoms of
+`L`.** Every classically valid sequent whose atoms are all in `L` is
+derivable. (Without Containment in the base this fails: over the empty base
+nothing is derivable.) -/
+theorem supraclassical_on {R : BaseRel α} {L : List α} (hC : R.ContainmentOn L)
+    {Γ Δ : List (Formula α)} (hΓ : ∀ φ ∈ Γ, ∀ a ∈ φ.atoms, a ∈ L)
+    (hΔ : ∀ φ ∈ Δ, ∀ a ∈ φ.atoms, a ∈ L) (h : Valid Γ Δ) : Derivable R Γ Δ := by
+  refine derivable_of_preserved R (fun Γ Δ => Valid Γ Δ ∧ (∀ φ ∈ Γ, ∀ a ∈ φ.atoms, a ∈ L) ∧
+      (∀ φ ∈ Δ, ∀ a ∈ φ.atoms, a ∈ L)) ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_
+    (measure Γ Δ + 1) Γ Δ (by omega) ⟨h, hΓ, hΔ⟩
+  · intro Γ Δ hg hd ⟨hv, hgL, _⟩
     obtain ⟨a, h1, h2⟩ := valid_atomic_overlap hg hd hv
-    exact Derivable.ax hg hd (hC _ _ ⟨a, mem_atomsOf.mpr h1, mem_atomsOf.mpr h2⟩)
+    exact Derivable.ax hg hd
+      (hC _ _ ⟨a, hgL _ h1 a (by simp), mem_atomsOf.mpr h1, mem_atomsOf.mpr h2⟩)
   · -- L¬
-    intro Γ Δ A _ H v hv
+    intro Γ Δ A hm ⟨H, hg, hd⟩
+    have lA : ∀ a ∈ A.atoms, a ∈ L := fun a h => hg _ hm a (by simp [h])
+    refine ⟨fun v hv => ?_, by atoms_in, by atoms_in⟩
     cases hA : A.eval v
     · exact ex_cons A (H v (all_of_rest hv (by simp [Formula.eval, hA])))
     · exact ex_head hA
   · -- L→
-    intro Γ Δ A B _ H
-    refine ⟨?_, ?_, ?_⟩
+    intro Γ Δ A B hm ⟨H, hg, hd⟩
+    have lA : ∀ a ∈ A.atoms, a ∈ L := fun a h => hg _ hm a (by simp [h])
+    have lB : ∀ a ∈ B.atoms, a ∈ L := fun a h => hg _ hm a (by simp [h])
+    refine ⟨⟨?_, by atoms_in, by atoms_in⟩, ⟨?_, by atoms_in, by atoms_in⟩,
+      ⟨?_, by atoms_in, by atoms_in⟩⟩
     · intro v hv
       cases hA : A.eval v
       · exact ex_cons A (H v (all_of_rest hv (by simp [Formula.eval, hA])))
@@ -119,14 +161,20 @@ theorem supraclassical {R : BaseRel α} (hC : R.Containment) {Γ Δ : List (Form
       exact ex_cons A (H v (all_of_rest (fun x hx => hv x (List.mem_cons_of_mem _ hx))
         (by simp [Formula.eval, hB])))
   · -- L∧
-    intro Γ Δ A B _ H v hv
+    intro Γ Δ A B hm ⟨H, hg, hd⟩
+    have lA : ∀ a ∈ A.atoms, a ∈ L := fun a h => hg _ hm a (by simp [h])
+    have lB : ∀ a ∈ B.atoms, a ∈ L := fun a h => hg _ hm a (by simp [h])
+    refine ⟨fun v hv => ?_, by atoms_in, by atoms_in⟩
     have hA := hv A (by simp)
     have hB := hv B (by simp)
     exact H v (all_of_rest (φ := conj A B) (fun x hx => hv x (by simp [hx]))
       (by simp [Formula.eval, hA, hB]))
   · -- L∨
-    intro Γ Δ A B _ H
-    refine ⟨?_, ?_, ?_⟩
+    intro Γ Δ A B hm ⟨H, hg, hd⟩
+    have lA : ∀ a ∈ A.atoms, a ∈ L := fun a h => hg _ hm a (by simp [h])
+    have lB : ∀ a ∈ B.atoms, a ∈ L := fun a h => hg _ hm a (by simp [h])
+    refine ⟨⟨?_, by atoms_in, by atoms_in⟩, ⟨?_, by atoms_in, by atoms_in⟩,
+      ⟨?_, by atoms_in, by atoms_in⟩⟩
     · intro v hv
       have hA := hv A (by simp)
       exact H v (all_of_rest (φ := disj A B) (fun x hx => hv x (by simp [hx]))
@@ -140,20 +188,28 @@ theorem supraclassical {R : BaseRel α} (hC : R.Containment) {Γ Δ : List (Form
       exact H v (all_of_rest (φ := disj A B) (fun x hx => hv x (by simp [hx]))
         (by simp [Formula.eval, hA]))
   · -- R¬
-    intro Γ Δ A _ H v hv
+    intro Γ Δ A hm ⟨H, hg, hd⟩
+    have lA : ∀ a ∈ A.atoms, a ∈ L := fun a h => hd _ hm a (by simp [h])
+    refine ⟨fun v hv => ?_, by atoms_in, by atoms_in⟩
     have hA := hv A (by simp)
     rcases pick (neg A) (H v (fun x hx => hv x (by simp [hx]))) with h | h
     · simp [Formula.eval, hA] at h
     · exact h
   · -- R→
-    intro Γ Δ A B _ H v hv
+    intro Γ Δ A B hm ⟨H, hg, hd⟩
+    have lA : ∀ a ∈ A.atoms, a ∈ L := fun a h => hd _ hm a (by simp [h])
+    have lB : ∀ a ∈ B.atoms, a ∈ L := fun a h => hd _ hm a (by simp [h])
+    refine ⟨fun v hv => ?_, by atoms_in, by atoms_in⟩
     have hA := hv A (by simp)
     rcases pick (impl A B) (H v (fun x hx => hv x (by simp [hx]))) with h | h
     · exact ex_head (by simpa [Formula.eval, hA] using h)
     · exact ex_cons B h
   · -- R∧
-    intro Γ Δ A B _ H
-    refine ⟨?_, ?_, ?_⟩
+    intro Γ Δ A B hm ⟨H, hg, hd⟩
+    have lA : ∀ a ∈ A.atoms, a ∈ L := fun a h => hd _ hm a (by simp [h])
+    have lB : ∀ a ∈ B.atoms, a ∈ L := fun a h => hd _ hm a (by simp [h])
+    refine ⟨⟨?_, by atoms_in, by atoms_in⟩, ⟨?_, by atoms_in, by atoms_in⟩,
+      ⟨?_, by atoms_in, by atoms_in⟩⟩
     · intro v hv
       rcases pick (conj A B) (H v hv) with h | h
       · exact ex_head (by simp [Formula.eval] at h; exact h.1)
@@ -167,13 +223,25 @@ theorem supraclassical {R : BaseRel α} (hC : R.Containment) {Γ Δ : List (Form
       · exact ex_head (by simp [Formula.eval] at h; exact h.1)
       · exact ex_cons A (ex_cons B h)
   · -- R∨
-    intro Γ Δ A B _ H v hv
+    intro Γ Δ A B hm ⟨H, hg, hd⟩
+    have lA : ∀ a ∈ A.atoms, a ∈ L := fun a h => hd _ hm a (by simp [h])
+    have lB : ∀ a ∈ B.atoms, a ∈ L := fun a h => hd _ hm a (by simp [h])
+    refine ⟨fun v hv => ?_, by atoms_in, by atoms_in⟩
     rcases pick (disj A B) (H v hv) with h | h
     · simp only [Formula.eval, Bool.or_eq_true] at h
       rcases h with h | h
       · exact ex_head h
       · exact ex_cons A (ex_head h)
     · exact ex_cons A (ex_cons B h)
+
+/-- **Supraclassicality, over a base that obeys Containment.** Every
+classically valid sequent is derivable (`supraclassical_on`, with `L` the
+atoms of the sequent). -/
+theorem supraclassical {R : BaseRel α} (hC : R.Containment) {Γ Δ : List (Formula α)}
+    (h : Valid Γ Δ) : Derivable R Γ Δ :=
+  supraclassical_on (L := (Γ ++ Δ).flatMap Formula.atoms) hC.on
+    (fun φ hφ _ ha => List.mem_flatMap.mpr ⟨φ, List.mem_append_left _ hφ, ha⟩)
+    (fun φ hφ _ ha => List.mem_flatMap.mpr ⟨φ, List.mem_append_right _ hφ, ha⟩) h
 
 /-! ### Truth under one valuation -/
 
@@ -304,5 +372,24 @@ theorem containmentBase_iff_valid (Γ Δ : List (Formula α)) :
   intro v X Y hb hX
   obtain ⟨a, h1, h2⟩ := containmentBase_iff.mp hb
   exact ⟨a, h2, hX a h1⟩
+
+/-! ### Containment supplied in a pyNMMS base -/
+
+/-- **Supraclassicality over `B` plus Containment for `L`**: over the pyNMMS
+base `B ++ coEntries L` (`B` with a MONOTONE `a |~ a` for each `a ∈ L`),
+every classically valid sequent whose atoms are all in `L` is derivable,
+whatever `B` is. -/
+theorem supraclassical_coEntries (B : List (Entry α)) (L : List α) {Γ Δ : List (Formula α)}
+    (hΓ : ∀ φ ∈ Γ, ∀ a ∈ φ.atoms, a ∈ L) (hΔ : ∀ φ ∈ Δ, ∀ a ∈ φ.atoms, a ∈ L)
+    (h : Valid Γ Δ) : Derivable (baseRel (B ++ coEntries L)) Γ Δ :=
+  supraclassical_on (containmentOn_coEntries B L) hΓ hΔ h
+
+/-- **Containment for the sentences over `L`, over `B` plus Containment for
+`L`**: over the pyNMMS base `B ++ coEntries L`, a shared sentence whose atoms
+are all in `L` makes a sequent derivable, whatever `B` is. -/
+theorem overlap_derivable_coEntries (B : List (Entry α)) (L : List α) (φ : Formula α)
+    {Γ Δ : List (Formula α)} (hL : ∀ a ∈ φ.atoms, a ∈ L) (h1 : φ ∈ Γ) (h2 : φ ∈ Δ) :
+    Derivable (baseRel (B ++ coEntries L)) Γ Δ :=
+  overlap_derivable_on (containmentOn_coEntries B L) φ hL h1 h2
 
 end NMMS

@@ -40,6 +40,20 @@ def conn : Formula α → Nat
   | disj a b => a.conn + b.conn + 1
   | impl a b => a.conn + b.conn + 1
 
+/-- The atoms occurring in a sentence, in order, with repetitions. -/
+def atoms : Formula α → List α
+  | atom a => [a]
+  | neg a => a.atoms
+  | conj a b => a.atoms ++ b.atoms
+  | disj a b => a.atoms ++ b.atoms
+  | impl a b => a.atoms ++ b.atoms
+
+@[simp] theorem atoms_atom (a : α) : (atom a).atoms = [a] := rfl
+@[simp] theorem atoms_neg (a : Formula α) : (neg a).atoms = a.atoms := rfl
+@[simp] theorem atoms_conj (a b : Formula α) : (conj a b).atoms = a.atoms ++ b.atoms := rfl
+@[simp] theorem atoms_disj (a b : Formula α) : (disj a b).atoms = a.atoms ++ b.atoms := rfl
+@[simp] theorem atoms_impl (a b : Formula α) : (impl a b).atoms = a.atoms ++ b.atoms := rfl
+
 /-- True exactly for atoms (pyNMMS's atom/complex partition of a side). -/
 def isAtom : Formula α → Bool
   | atom _ => true

@@ -4,8 +4,8 @@
   "Not derivable" certificates. A refutation is one failing branch: a list of
   steps, each naming a side, a principal sentence on that side, and which of
   its rule's premises to follow, ending at an atomic sequent that is not in
-  the base. `refute` checks it in one pass, with no search. Its length is at
-  most the connective count.
+  the base. `refute` checks it in one pass, with no search. An accepted
+  refutation is no longer than the connective count (`refute_length`).
 
   * `refute_sound`: a refutation that checks shows the sequent is not
     derivable, over every set-invariant base. Soundness needs invertibility:
@@ -13,9 +13,12 @@
     to the leaf.
   * `refute_complete`: every sequent that is not derivable has one, so
     `refute` accepts refutations for exactly the underivable sequents.
-  * `findRefute` builds it (the search `nmms-lean` runs);
-    `findRefute_complete` proves it succeeds on every underivable sequent,
-    and its output is in any case checked by `refute`.
+  * `findRefute` builds one (the search `nmms-lean` runs). What it returns
+    is always a refutation that `refute` accepts (`findRefute_sound`), and on
+    every underivable sequent it returns one (`findRefute_complete`).
+  * `refuteOk_iff`: `nmms-lean`'s "refute_ok" (run `findRefute`, check its
+    output with `refute`, `false` if it found nothing) is `true` exactly on
+    the sequents that are not derivable, over every set-invariant base.
 
   The leaf test is the base alone: an atomic sequent whose sides share an
   atom is a failing leaf unless the base contains it.
@@ -62,6 +65,22 @@ theorem refute_sound (hR : R.SetInvariant) :
     split at h
     · rename_i p hp
       exact refute_sound hR cs _ _ h (premises_inv hR hm hd p (List.mem_of_getElem? hp))
+    · simp at h
+
+/-- An accepted refutation has at most as many steps as the sequent has
+connectives: each step moves to a lighter premise. -/
+theorem refute_length :
+    ∀ (c : List (Step α)) (Γ Δ : List (Formula α)), refute R c Γ Δ = true →
+      c.length ≤ measure Γ Δ
+  | [], _, _, _ => by simp
+  | s :: cs, Γ, Δ, h => by
+    simp only [refute, Bool.and_eq_true, List.contains_iff_mem] at h
+    obtain ⟨hm, h⟩ := h
+    split at h
+    · rename_i p hp
+      have := premises_measure hm p (List.mem_of_getElem? hp)
+      have := refute_length cs _ _ h
+      simp only [List.length_cons]; omega
     · simp at h
 
 /-- Some premise of a rule with an underivable conclusion is underivable. -/
@@ -115,8 +134,34 @@ def findRefuteN (R : BaseRel α) : Nat → List (Formula α) → List (Formula �
       (premises b φ Γ Δ).zipIdx.findSome? (fun pi =>
         (findRefuteN R n pi.1.1 pi.1.2).map (fun c => ⟨b, φ, pi.2⟩ :: c))
 
+/-- Build a failing branch, with fuel one above the connective count. -/
 def findRefute (R : BaseRel α) (Γ Δ : List (Formula α)) : Option (List (Step α)) :=
   findRefuteN R (measure Γ Δ + 1) Γ Δ
+
+/-- Whatever `findRefuteN` returns is a refutation that `refute` accepts,
+for every fuel and every base. -/
+theorem findRefuteN_sound :
+    ∀ n (Γ Δ : List (Formula α)) (c : List (Step α)), findRefuteN R n Γ Δ = some c →
+      refute R c Γ Δ = true
+  | 0, _, _, _, h => by simp [findRefuteN] at h
+  | n + 1, Γ, Δ, c, h => by
+    simp only [findRefuteN] at h
+    split at h
+    · rename_i hp
+      obtain ⟨hg, hd⟩ := pickComplex_none hp
+      cases hax : axiomCheck R Γ Δ
+      · simp only [hax, Bool.false_eq_true, ite_false, Option.some.injEq] at h
+        subst h
+        simp only [axiomCheck, hg, hd, Bool.true_and] at hax
+        simp [refute, hg, hd, hax]
+      · simp [hax] at h
+    · rename_i b φ hp
+      obtain ⟨hm, _⟩ := pickComplex_some hp
+      obtain ⟨⟨p, i⟩, hpi, hf⟩ := List.exists_of_findSome?_eq_some h
+      obtain ⟨c', hc', rfl⟩ := Option.map_eq_some_iff.mp hf
+      have hi : (premises b φ Γ Δ)[i]? = some p := List.mem_zipIdx_iff_getElem?.mp hpi
+      simp only [refute, Bool.and_eq_true, List.contains_iff_mem]
+      exact ⟨hm, by rw [hi]; exact findRefuteN_sound n p.1 p.2 c' hc'⟩
 
 theorem findRefuteN_complete :
     ∀ n (Γ Δ : List (Formula α)), measure Γ Δ < n → ¬ Derivable R Γ Δ →
@@ -138,9 +183,40 @@ theorem findRefuteN_complete :
       refine ⟨(p, i), List.mem_zipIdx_iff_getElem?.mpr hi, ?_⟩
       simpa using ih
 
-/-- **`findRefute` finds a refutation for every underivable sequent.** -/
-theorem findRefute_complete {Γ Δ : List (Formula α)}
+/-- **`findRefute` is sound**: what it returns is a refutation that `refute`
+accepts (over every base; over a set-invariant base that shows
+non-derivability, `refute_sound`). -/
+theorem findRefute_sound {Γ Δ : List (Formula α)} {c : List (Step α)}
+    (h : findRefute R Γ Δ = some c) : refute R c Γ Δ = true :=
+  findRefuteN_sound _ Γ Δ c h
+
+/-- `findRefute` returns something on every underivable sequent. -/
+theorem findRefute_isSome {Γ Δ : List (Formula α)}
     (h : ¬ Derivable R Γ Δ) : (findRefute R Γ Δ).isSome = true :=
   findRefuteN_complete _ Γ Δ (by omega) h
+
+/-- **`findRefute` is complete**: on every underivable sequent it returns a
+refutation that `refute` accepts. -/
+theorem findRefute_complete {Γ Δ : List (Formula α)}
+    (h : ¬ Derivable R Γ Δ) : ∃ c, findRefute R Γ Δ = some c ∧ refute R c Γ Δ = true := by
+  cases hc : findRefute R Γ Δ with
+  | none => have := findRefute_isSome (R := R) h; rw [hc] at this; cases this
+  | some c => exact ⟨c, rfl, findRefute_sound hc⟩
+
+/-- **What `nmms-lean` reports as "refute_ok"** (run `findRefute`, check its
+output with `refute`, `false` if it found nothing) is `true` exactly on the
+underivable sequents, over every set-invariant base. -/
+theorem refuteOk_iff (hR : R.SetInvariant) (Γ Δ : List (Formula α)) :
+    (match findRefute R Γ Δ with
+      | some c => refute R c Γ Δ
+      | none => false) = true ↔ ¬ Derivable R Γ Δ := by
+  constructor
+  · intro h
+    split at h
+    · exact refute_sound hR _ Γ Δ h
+    · cases h
+  · intro h
+    obtain ⟨c, hc, hr⟩ := findRefute_complete h
+    rw [hc]; exact hr
 
 end NMMS

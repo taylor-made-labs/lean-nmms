@@ -16,8 +16,14 @@
     is an axiom. In particular Containment (a sentence on both sides) is *not*
     added: over a base without `p |~ p`, `p ⇒ p` is not derivable, and over
     the empty base nothing is (`emptyBase_underivable`). A base that obeys
-    Containment (`BaseRel.Containment`) is a hypothesis of the theorems that
-    need it, never a default.
+    Containment is a hypothesis of the theorems that need it, never a
+    default, in two forms: `BaseRel.Containment` for every atom of `α`, and
+    `BaseRel.ContainmentOn L` for the atoms of a language `L` only. Adding
+    the MONOTONE entries `a |~ a`, one per `a ∈ L` (`coEntries L`,
+    `LeanNmms.Base`), gives any base the second. Over `String` or `Nat`
+    atoms those entries alone never have the first, since `b ⇒ b` is
+    missing for every atom `b ∉ L` (`baseRel_containment`). The second is
+    what the theorems about sequents whose atoms are in `L` need.
   * The eight rules are the book's, including the third top sequents of L→,
     L∨ and R∧. In the book `Γ, A ⇒ Δ` is `Γ ∪ {A}`, so a rule's context may
     itself contain the principal sentence. Each constructor therefore takes
@@ -80,9 +86,24 @@ def BaseRel.SetInvariant (R : BaseRel α) : Prop :=
   ∀ a b a' b', SetEq a a' → SetEq b b' → R a b = R a' b'
 
 /-- The base obeys Containment: every atomic sequent whose sides share an atom
-is in it. NMMS does not assume this; theorems that need it say so. -/
+is in it. NMMS does not assume this; theorems that need it say so. This
+quantifies over every atom of `α`, including atoms that no entry mentions, so
+over `String` or `Nat` atoms the base `coEntries L` (`LeanNmms.Base`) never
+has it; `ContainmentOn L` is the form it has. -/
 def BaseRel.Containment (R : BaseRel α) : Prop :=
   ∀ X Y, (∃ a, a ∈ X ∧ a ∈ Y) → R X Y = true
+
+/-- The base obeys Containment for the atoms of the language `L`: every
+atomic sequent whose sides share an atom of `L` is in it. The MONOTONE
+entries `a |~ a`, one per `a ∈ L`, supply exactly this
+(`containmentOn_coEntries`, `LeanNmms.Base`). -/
+def BaseRel.ContainmentOn (R : BaseRel α) (L : List α) : Prop :=
+  ∀ X Y, (∃ a ∈ L, a ∈ X ∧ a ∈ Y) → R X Y = true
+
+/-- Containment for every atom gives Containment for the atoms of any `L`. -/
+theorem BaseRel.Containment.on {R : BaseRel α} (h : R.Containment) {L : List α} :
+    R.ContainmentOn L :=
+  fun X Y ⟨a, _, h1, h2⟩ => h X Y ⟨a, h1, h2⟩
 
 /-- **NMMS derivability over the base `R`** (Hlobil and Brandom 2025, ch. 3):
 `Derivable R Γ Δ` is `Γ ⇒ Δ`. In each rule `Γ₀` / `Δ₀` is the rule's

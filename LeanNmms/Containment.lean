@@ -10,9 +10,15 @@
      every premise). `derivable_of_preserved` is the case `Q = Derivable`.
   2. Containment for every sentence (Reflexivity in the book's terms), *for a
      base that obeys Containment*: then `Γ ⇒ Δ` is derivable whenever the sides
-     share any sentence, atomic or complex. NMMS does not assume the base
-     obeys Containment, and without it these sequents need not be derivable
-     (`emptyBase_underivable`: over the empty base not even `p ⇒ p` is).
+     share any sentence, atomic or complex. Two forms: over a base with
+     Containment for the atoms of a language `L` (`BaseRel.ContainmentOn L`,
+     which a finite base supplies), a shared sentence whose atoms are all in
+     `L` suffices, `overlap_derivable_on`; over a base with Containment for
+     every atom (`BaseRel.Containment`), any shared sentence does,
+     `overlap_derivable` (the case `L` = the sentence's atoms). NMMS does not
+     assume the base obeys Containment, and without it these sequents need
+     not be derivable (`emptyBase_underivable`: over the empty base not even
+     `p ⇒ p` is).
 -/
 import LeanNmms.Calculus
 
@@ -133,46 +139,67 @@ theorem derivable_of_preserved (R : BaseRel α)
     (fun _ _ _ h => Derivable.negR_rest h) (fun _ _ _ _ h => Derivable.implR_rest h)
     (fun _ _ _ _ h => Derivable.conjR_rest h) (fun _ _ _ _ h => Derivable.disjR_rest h)
 
-/-- Over a base that obeys Containment: a shared atom makes a sequent
-derivable, whatever else is on the sides. -/
-theorem atom_overlap {R : BaseRel α} (hC : R.Containment) {a : α} {Γ Δ : List (Formula α)}
-    (h1 : atom a ∈ Γ) (h2 : atom a ∈ Δ) : Derivable R Γ Δ := by
+/-- Over a base that obeys Containment for the atoms of `L`: a shared atom of
+`L` makes a sequent derivable, whatever else is on the sides. -/
+theorem atom_overlap_on {R : BaseRel α} {L : List α} (hC : R.ContainmentOn L) {a : α}
+    (ha : a ∈ L) {Γ Δ : List (Formula α)} (h1 : atom a ∈ Γ) (h2 : atom a ∈ Δ) :
+    Derivable R Γ Δ := by
   refine derivable_of_preserved R (fun Γ Δ => atom a ∈ Γ ∧ atom a ∈ Δ)
     ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ (measure Γ Δ + 1) Γ Δ (by omega) ⟨h1, h2⟩
   · intro Γ Δ hg hd ⟨h1, h2⟩
-    exact Derivable.ax hg hd (hC _ _ ⟨a, mem_atomsOf.mpr h1, mem_atomsOf.mpr h2⟩)
+    exact Derivable.ax hg hd (hC _ _ ⟨a, ha, mem_atomsOf.mpr h1, mem_atomsOf.mpr h2⟩)
   all_goals (intros; simp_all)
+
+/-- **Containment for the sentences over `L`, over a base that obeys
+Containment for the atoms of `L`**: a shared sentence whose atoms are all in
+`L` makes a sequent derivable. -/
+theorem overlap_derivable_on {R : BaseRel α} {L : List α} (hC : R.ContainmentOn L) :
+    ∀ (φ : Formula α) {Γ Δ : List (Formula α)}, (∀ a ∈ φ.atoms, a ∈ L) →
+      φ ∈ Γ → φ ∈ Δ → Derivable R Γ Δ := by
+  intro φ
+  induction φ with
+  | atom a => intro Γ Δ hL h1 h2; exact atom_overlap_on hC (hL a (by simp)) h1 h2
+  | neg A ih =>
+    intro Γ Δ hL h1 h2
+    refine Derivable.negL_rest h1 (Derivable.negR_rest (A := A) (by simp [h2]) ?_)
+    exact ih (by simpa using hL) (by simp) (by simp [ne_neg A])
+  | conj A B ihA ihB =>
+    intro Γ Δ hL h1 h2
+    have hA : ∀ a ∈ A.atoms, a ∈ L := fun a h => hL a (by simp [h])
+    have hB : ∀ a ∈ B.atoms, a ∈ L := fun a h => hL a (by simp [h])
+    refine Derivable.conjL_rest h1 (Derivable.conjR_rest h2 ?_ ?_ ?_)
+    · exact ihA hA (by simp) (by simp)
+    · exact ihB hB (by simp) (by simp)
+    · exact ihA hA (by simp) (by simp)
+  | disj A B ihA ihB =>
+    intro Γ Δ hL h1 h2
+    have hA : ∀ a ∈ A.atoms, a ∈ L := fun a h => hL a (by simp [h])
+    have hB : ∀ a ∈ B.atoms, a ∈ L := fun a h => hL a (by simp [h])
+    refine Derivable.disjL_rest h1 (Derivable.disjR_rest h2 ?_) (Derivable.disjR_rest h2 ?_)
+      (Derivable.disjR_rest h2 ?_)
+    · exact ihA hA (by simp) (by simp)
+    · exact ihB hB (by simp) (by simp)
+    · exact ihA hA (by simp) (by simp)
+  | impl A B ihA ihB =>
+    intro Γ Δ hL h1 h2
+    have hA : ∀ a ∈ A.atoms, a ∈ L := fun a h => hL a (by simp [h])
+    have hB : ∀ a ∈ B.atoms, a ∈ L := fun a h => hL a (by simp [h])
+    refine Derivable.implL_rest h1 (Derivable.implR_rest (A := A) (B := B) (by simp [h2]) ?_)
+      (Derivable.implR_rest h2 ?_) (Derivable.implR_rest (A := A) (B := B) (by simp [h2]) ?_)
+    · exact ihA hA (by simp) (by simp [ne_impl_l A B])
+    · exact ihB hB (by simp) (by simp)
+    · exact ihB hB (by simp) (by simp)
+
+/-- Over a base that obeys Containment: a shared atom makes a sequent
+derivable, whatever else is on the sides. -/
+theorem atom_overlap {R : BaseRel α} (hC : R.Containment) {a : α} {Γ Δ : List (Formula α)}
+    (h1 : atom a ∈ Γ) (h2 : atom a ∈ Δ) : Derivable R Γ Δ :=
+  atom_overlap_on (L := [a]) hC.on (List.mem_singleton_self a) h1 h2
 
 /-- **Containment for all sentences, over a base that obeys Containment**: a
 shared sentence makes a sequent derivable. -/
 theorem overlap_derivable {R : BaseRel α} (hC : R.Containment) :
-    ∀ (φ : Formula α) {Γ Δ : List (Formula α)}, φ ∈ Γ → φ ∈ Δ → Derivable R Γ Δ := by
-  intro φ
-  induction φ with
-  | atom a => intro Γ Δ h1 h2; exact atom_overlap hC h1 h2
-  | neg A ih =>
-    intro Γ Δ h1 h2
-    refine Derivable.negL_rest h1 (Derivable.negR_rest (A := A) (by simp [h2]) ?_)
-    exact ih (by simp) (by simp [ne_neg A])
-  | conj A B ihA ihB =>
-    intro Γ Δ h1 h2
-    refine Derivable.conjL_rest h1 (Derivable.conjR_rest h2 ?_ ?_ ?_)
-    · exact ihA (by simp) (by simp)
-    · exact ihB (by simp) (by simp)
-    · exact ihA (by simp) (by simp)
-  | disj A B ihA ihB =>
-    intro Γ Δ h1 h2
-    refine Derivable.disjL_rest h1 (Derivable.disjR_rest h2 ?_) (Derivable.disjR_rest h2 ?_)
-      (Derivable.disjR_rest h2 ?_)
-    · exact ihA (by simp) (by simp)
-    · exact ihB (by simp) (by simp)
-    · exact ihA (by simp) (by simp)
-  | impl A B ihA ihB =>
-    intro Γ Δ h1 h2
-    refine Derivable.implL_rest h1 (Derivable.implR_rest (A := A) (B := B) (by simp [h2]) ?_)
-      (Derivable.implR_rest h2 ?_) (Derivable.implR_rest (A := A) (B := B) (by simp [h2]) ?_)
-    · exact ihA (by simp) (by simp [ne_impl_l A B])
-    · exact ihB (by simp) (by simp)
-    · exact ihB (by simp) (by simp)
+    ∀ (φ : Formula α) {Γ Δ : List (Formula α)}, φ ∈ Γ → φ ∈ Δ → Derivable R Γ Δ :=
+  fun φ _ _ h1 h2 => overlap_derivable_on (L := φ.atoms) hC.on φ (fun _ h => h) h1 h2
 
 end NMMS

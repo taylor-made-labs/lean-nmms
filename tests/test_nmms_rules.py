@@ -15,7 +15,12 @@ pp. 108-111) as implemented independently in difftest/nmms_reference.py:
     principal sentence) is accepted exactly when the sequent is derivable
     (certificates over CERT_MAX_BYTES are not sent);
   * a query outside the base's language, or a base listing a pair twice, is
-    refused; the closure operation reports "in_closure", never "derivable".
+    refused; the closure operation reports "in_closure", never "derivable";
+  * a line with an unpaired UTF-16 surrogate escape is refused (`Json.parse`
+    would read it as U+FFFD and so make distinct atoms one), and atoms
+    written as surrogate pairs stay distinct;
+  * nmms-lean and the reference accept and refuse the same robustness
+    values and agree on the accepted ones.
 
 Run (after `lake build`):  python3 -B -m unittest -v tests.test_nmms_rules
 """
@@ -217,6 +222,60 @@ class InputChecks(unittest.TestCase):
             with self.subTest(case=out["id"]):
                 self.assertIn("error", out)
         self.assertIs(outs[5].get("derivable"), True, outs[5])
+
+    def test_unpaired_surrogate_escapes_are_refused(self):
+        # json.dumps (ensure_ascii, the default) sends each lone surrogate as
+        # an escape; read as U+FFFD, "<\udc80>" and "<\udc81>" would be one
+        # atom and the underivable "<\udc81>" => q would come out derivable.
+        cons = [{"antecedent": ["<\udc80>"], "consequent": ["q"]}]
+        query = [{"atom": "<\udc81>"}]
+        outs = run([ask({"consequences": cons}, query, [Q], id="collapse"),
+                    ask({"language": ["<\udc80>", "q"], "consequences": cons}, query, [Q],
+                        id="outside-language")])
+        for out in outs:
+            self.assertNotIn("derivable", out)
+            self.assertIn("unpaired UTF-16 surrogate escape", out.get("error", ""), out)
+
+    def test_surrogate_pair_atoms_stay_distinct(self):
+        grin, beam = "\U0001F600", "\U0001F601"  # sent as surrogate-pair escapes
+        b = {"consequences": [{"antecedent": [grin], "consequent": ["q"]}]}
+        other, same = run([ask(b, [{"atom": beam}], [Q], id="other"),
+                           ask(b, [{"atom": grin}], [Q], id="same")])
+        self.assertIs(other.get("derivable"), False, other)
+        self.assertIs(other.get("refute_ok"), True, other)
+        self.assertIs(same.get("derivable"), True, same)
+
+    def test_robustness_is_read_as_the_reference_reads_it(self):
+        S = {"atom": "s"}
+        robs = [None, "exact", "monotone", "guarded", "bogus", 5, {}, {"kind": "guarded"},
+                {"kind": "monotone", "unless": {}}, {"kind": "monotone", "unless": None},
+                {"kind": "monotone", "unless": {"antecedent": ["r"]}},
+                {"unless": {"pairs": [{"antecedent": ["r"]}]}},
+                {"kind": "exact", "unless": {"antecedent": [], "consequent": [], "pairs": []}},
+                {"kind": "monotone", "unless": 5}, {"kind": "guarded", "unless": {"pairs": 5}},
+                {"kind": "guarded", "unless": {"pairs": [{}]}},
+                {"kind": "guarded", "unless": {"antecedent": ["r"],
+                                               "pairs": [{"antecedent": ["r", "s"]}]}},
+                {"kind": "guarded", "unless": {"consequent": ["s"]}},
+                {"kind": "guarded", "unless": {"antecedent": "r"}},
+                {"kind": "guarded", "unless": False}]
+        qs, want = [], []
+        for rob in robs:
+            b = {"language": ["p", "q", "r", "s"], "consequences": [
+                {"antecedent": ["p"], "consequent": ["q"], "robustness": rob}]}
+            try:
+                prover = ref.make_prover(ref.Base(b))
+            except ValueError:
+                prover = None
+            for ant, con in (([P], [Q]), ([P, R], [Q]), ([P], [Q, S])):
+                qs.append(ask(b, ant, con, id=len(qs)))
+                want.append(prover and prover(frozenset(map(ref.freeze, ant)),
+                                              frozenset(map(ref.freeze, con))))
+        for out, w, q in zip(run(qs), want, qs):
+            rob = q["base"]["consequences"][0]["robustness"]
+            with self.subTest(robustness=rob, ant=q["antecedent"], con=q["consequent"]):
+                self.assertEqual(out.get("derivable"), w, out)
+                self.assertEqual("error" in out, w is None, out)
 
     def test_closure_is_not_reported_as_derivability(self):
         a, b, c = {"atom": "a"}, {"atom": "b"}, {"atom": "c"}
