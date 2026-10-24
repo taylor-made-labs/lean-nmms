@@ -1,7 +1,7 @@
 """Regression test for the input hardening of `nmms-lean` (Main.lean).
 
 Stdlib only; runs the built binary with a list argv (no shell). Checks:
-  * 27 malformed or over-limit inputs each return an {"error": ...} line within
+  * 29 malformed or over-limit inputs each return an {"error": ...} line within
     5 seconds: a line over the byte cap, nesting over the depth cap (1,000,000
     nested `neg`), a base without "consequences", a wrong-typed field
     ("unless": 5), an unknown "engine", a certificate with the wrong number of
@@ -15,23 +15,26 @@ Stdlib only; runs the built binary with a list argv (no shell). Checks:
     "ax" and "side", a node with an unknown key, a "keep" of null, a rule
     node on an atom; a repeated key, which `Json.parse` would read by its last
     value (in a formula, in a certificate leaf, spelled with an escape); a
-    defeater atom outside the base's language;
+    number with an exponent of more than two digits (positive or negative) or
+    longer than 100 characters, which `Json.parse` would build digit by digit;
   * 3 well-formed queries (same shape as the difftest corpus) return exactly
     the expected answers (captured from the pre-hardening build; the third
     changed when Containment stopped being added: over the empty base
     `p, q ⇒ q` is not an axiom, so `p ∧ q ⇒ q` is not derivable and its
     certificate is rejected);
-  * 7 well-formed queries that the checks above must not refuse return
+  * 9 well-formed queries that the checks above must not refuse return
     exactly the expected answers: an atom written as a surrogate-pair escape
     (an emoji, which `json.dumps` sends as a high and a low escape; a
     different emoji stays a different atom), an escaped backslash followed
     by `udc80` (not an escape), robustness that pyNMMS accepts
     ({"kind": "monotone", "unless": {}} and the plain string "monotone"), and
     atoms containing ":" (also after an escaped quote), which the
-    repeated-key check counts only outside strings.
+    repeated-key check counts only outside strings, a GUARDED defeater atom
+    outside the language (pyNMMS accepts it; it never fires), and numbers
+    within the bounds.
 
 Run (from anywhere, after `lake build`):  python3 -I difftest/malformed_test.py
-Exit status 0 only if all 37 checks pass.
+Exit status 0 only if all 41 checks pass.
 """
 
 import json
@@ -149,9 +152,14 @@ error_cases = {
         '{"id":1,"base":{"language":["p","q","r"],"consequences":[{"antecedent":["p"],'
         '"consequent":["q"]}]},"antecedent":[{"atom":"r","\\u0061tom":"p"}],'
         '"consequent":[{"atom":"q"}]}\n', [], "repeats a key"),
-    "defeater atom outside the language": (
-        rob_query({"kind": "guarded", "unless": {"antecedent": ["zzz"]}}), [],
-        "atom zzz in the base is not in the base's language"),
+    # Json.parse builds numbers digit by digit as big integers: each of these
+    # would take minutes or gigabytes.
+    "number with a long exponent (1e1000000)": (
+        '{"id":1e1000000}\n', [], "exponent of more than two digits"),
+    "number with a long negative exponent": (
+        query(id=1).replace('"id": 1', '"id": 1E-100'), [], "exponent of more than two digits"),
+    "number longer than 100 characters": (
+        query(id=int("1" * 101)), [], "longer than 100 characters"),
 }
 
 # Expected answers on these three corpus-shaped queries (see the header).
@@ -185,6 +193,13 @@ accepted_cases = {
         rob_query("monotone", [P, {"atom": "r"}]), DERIVABLE),
     'an atom containing ":"': (atom_query("a:b", "a:b"), DERIVABLE),
     'an atom containing an escaped quote and ":"': (atom_query('a":b', 'a":b'), DERIVABLE),
+    # pyNMMS accepts a defeater atom outside L_B (its to_dict keeps it there);
+    # no query may mention it, so it never fires.
+    "a GUARDED defeater atom outside the language": (
+        rob_query({"kind": "guarded", "unless": {"antecedent": ["zzz"]}}), DERIVABLE),
+    "numbers within the bounds (id -1.5e-10, true/false/null elsewhere)": (
+        query(id=1).replace('"id": 1', '"id": -1.5e-10, "engine": null, "x": [true, false]'),
+        {**UNDERIVABLE, "id": -1.5e-10}),
 }
 
 passed = failed = 0

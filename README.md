@@ -44,7 +44,7 @@ derivability over B plus Containment, not over B (see "Differential test").
 Every theorem below is in namespace `NMMS`. Outside comments and string
 literals, no source file
 contains `sorry`, `admit`, `native_decide`, `extern` or `axiom`; each of the
-2,052 constants of `Main` and `LeanNmms` depends only on `propext`,
+2,049 constants of `Main` and `LeanNmms` depends only on `propext`,
 `Classical.choice` and `Quot.sound` (`tests/AllConstantsAxioms.lean`).
 "Derivable" means derivable in the Lean definition `Derivable`
 (Calculus.lean), which is the specification: the chapter's axiom clause and
@@ -160,8 +160,10 @@ query with another atom gets `{"error": ...}` rather than an answer. Without
 `language`, the atoms that occur are the language. A base that lists the
 same pair twice is refused (pyNMMS keeps one policy per pair), and so is a
 robustness value pyNMMS refuses: defeaters (`unless`) on an EXACT or
-MONOTONE entry, or an exclusion pair with no atoms; defeater atoms must be
-in the `language` too. A formula object must have exactly one key, and a
+MONOTONE entry, or an exclusion pair with no atoms. (A GUARDED entry's
+defeater atoms may lie outside `language`, as pyNMMS allows; such a defeater
+never fires, since no query may mention its atom.) A formula object must
+have exactly one key, and a
 certificate node must be `{"ax": true}` or a rule node on a complex
 sentence with `"side"` `"L"` or `"R"`. Two inputs that the JSON reader would
 silently reinterpret are refused: a line with an unpaired UTF-16 surrogate
@@ -170,7 +172,10 @@ distinct names become one, and an object that repeats a key, of which it
 would keep only the last value. In each case the program answers about the
 base and sequent as written or not at all. Errors found before the line is
 parsed (bad JSON or UTF-8, a line too long or nested too deeply, a
-surrogate, a repeated key) carry no `id`; blank lines get no answer.
+surrogate, a repeated key, a number over 100 characters or with an exponent
+of more than two digits, which the JSON reader would build digit by digit
+as a big integer) carry no `id`; a blank line within `--max-line-bytes`
+gets no answer.
 
 Two further request kinds, `"op": "closure"` and `"op": "score"`, check the
 closure certificates and the ground and entitlement certificates above. Both
@@ -256,10 +261,10 @@ then:
 
     lake build                                    # library and .lake/build/bin/nmms-lean
     lake env lean Axioms.lean                     # prints the axioms each main theorem uses
-    lake env lean tests/AllConstantsAxioms.lean   # prints FIXES_AXIOMS_OK 2052 constants
+    lake env lean tests/AllConstantsAxioms.lean   # prints FIXES_AXIOMS_OK 2049 constants
     lake env lean tests/NmmsRules.lean            # kernel examples of the chapter's rules
     lake env lean tests/FixesDerivation.lean      # kernel examples (also FixesGround.lean)
-    python3 -I difftest/malformed_test.py         # 37 input-hardening checks
+    python3 -I difftest/malformed_test.py         # 41 input-hardening checks
     python3 -B -m unittest -v tests.test_nmms_rules   # rules vs. the stdlib reference
 
 Differential test (see "Differential test"): `python3 -m venv VENV`, then

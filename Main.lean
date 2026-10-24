@@ -8,7 +8,8 @@
   for instance as a MONOTONE entry `a |~ a` for each atom `a`.
 
   Reads JSON Lines on standard input, one query per line, and writes one JSON
-  result per non-blank line (a blank line gets no answer). A query:
+  result per non-blank line (a blank line within --max-line-bytes gets no
+  answer). A query:
 
     { "id": <any>,
       "base": <pyNMMS MaterialBase.to_dict() output>,
@@ -24,10 +25,12 @@
   tree from pyNMMS's own parse.
 
   The base's "language" (pyNMMS's L_B), when present, must contain every atom
-  of the base's entries (defeaters included) and of the query: the base
-  relation is a relation on sets of atoms of L_B, and a sentence with another
-  atom is not a sentence of the language, so such a query is refused with an
-  error rather than answered. Without "language" the language is taken to be whatever atoms
+  of the base's entries' antecedents and consequents and of the query: the
+  base relation is a relation on sets of atoms of L_B, and a sentence with
+  another atom is not a sentence of the language, so such a query is refused
+  with an error rather than answered. A GUARDED entry's defeater atoms may lie
+  outside it, as pyNMMS 0.15.1 allows (its `to_dict()` keeps them outside
+  L_B); such a defeater can never fire, since no query may mention its atom. Without "language" the language is taken to be whatever atoms
   occur. A base that lists the same pair (as sets) twice is refused, since
   pyNMMS keeps one policy per pair and the two readings could differ.
 
@@ -53,6 +56,11 @@
   escape into U+FFFD, so distinct names such as "\udc80" and "\udc81" would
   become one atom and the answer would be about another base or sequent. A
   surrogate pair is one character and is accepted.
+  A number longer than 100 characters, or with an exponent of more than two
+  digits, is refused as well: `Json.parse` builds such numbers digit by digit
+  as big integers (`1e1000000` alone would take minutes and gigabytes), and
+  no field needs one.
+
   An object that repeats a key is refused too: `Json.parse` would keep only
   the last value (`{"atom": "r", "atom": "p"}` would be read as `p`).
   `prescan` counts the members each line has (every `:` outside a string) and
@@ -220,14 +228,10 @@ def checkFormulas (pb : ParsedBase) (what : String) (fs : List (Formula String))
     Except String Unit :=
   checkLanguage pb what (fs.flatMap formulaAtoms)
 
-/-- The atoms a robustness policy names (a GUARDED entry's defeaters). -/
-def robustnessAtoms : Robustness String → List String
-  | .guarded g => g.left ++ g.right ++ g.pairs.flatMap fun p => p.1 ++ p.2
-  | _ => []
-
 /-- `consequences` is required (pyNMMS's `base.schema.json`) and must be an
 array; `language`, when present, is a list of atom names that must contain
-every atom of the entries, defeaters included. A pair listed twice is
+every atom of the entries' antecedents and consequents (a defeater atom may
+lie outside it, as pyNMMS allows; see the header). A pair listed twice is
 refused. -/
 def parseBase (j : Json) : Except String ParsedBase := do
   let cs ← match field? j "consequences" with
@@ -243,7 +247,7 @@ def parseBase (j : Json) : Except String ParsedBase := do
     pure ({ ant, con, rob } : Entry String)
   let pb : ParsedBase := { entries, language }
   for e in entries do
-    checkLanguage pb "the base" (e.ant ++ e.con ++ robustnessAtoms e.rob)
+    checkLanguage pb "the base" (e.ant ++ e.con)
     if (entries.filter fun e' => setEqB e.ant e'.ant && setEqB e.con e'.con).length > 1 then
       throw s!"the base lists the pair {repr e.ant} |~ {repr e.con} more than once"
   pure pb
@@ -466,7 +470,10 @@ escapes are skipped), stopping as soon as `cap` is exceeded, since
 `Json.parse`'s recursion would otherwise follow the nesting; and every `\u`
 escape inside a string, which must not be an unpaired UTF-16 surrogate (see
 the header): an escape in D800-DBFF must be immediately followed by one in
-DC00-DFFF, and the pair is consumed together. In valid JSON every `:`
+DC00-DFFF, and the pair is consumed together. A number token (the bytes
+`0-9 + - . e E` outside a string; the `e` of `true`/`false` starts a
+harmless one-byte token) is refused if it is longer than 100 bytes or its
+exponent has more than two digits (see the header). In valid JSON every `:`
 outside a string separates one object member, so the count is the number of
 those; `handle` compares it with the parsed value to catch a repeated key. -/
 def prescan (bytes : ByteArray) (cap : Nat) : Except String Nat := Id.run do
@@ -474,6 +481,9 @@ def prescan (bytes : ByteArray) (cap : Nat) : Except String Nat := Id.run do
     s!"unpaired UTF-16 surrogate escape \\u{(String.ofList (Nat.toDigits 16 c)).toUpper} in a JSON string"
   let mut depth := 0
   let mut members := 0
+  let mut numLen := 0     -- bytes of the current number token
+  let mut inExp := false  -- past its `e`/`E`
+  let mut expDigits := 0
   let mut inStr := false
   let mut skip := 0  -- bytes of the current escape still to pass over
   for i in [0:bytes.size] do
@@ -481,6 +491,18 @@ def prescan (bytes : ByteArray) (cap : Nat) : Except String Nat := Id.run do
       skip := skip - 1
       continue
     let b := bytes[i]!
+    if !inStr && ((48 ≤ b && b ≤ 57) || b == 43 || b == 45 || b == 46 || b == 101 || b == 69) then
+      numLen := numLen + 1
+      if b == 101 || b == 69 then
+        inExp := true
+        expDigits := 0
+      else if inExp && 48 ≤ b && b ≤ 57 then expDigits := expDigits + 1
+      if numLen > 100 || expDigits > 2 then
+        return .error "a number longer than 100 characters or with an exponent of more than two digits"
+      continue
+    numLen := 0
+    inExp := false
+    expDigits := 0
     if inStr then
       if b == 92 then
         match unicodeEscapeAt bytes i with
