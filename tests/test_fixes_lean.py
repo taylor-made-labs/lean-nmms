@@ -91,6 +91,19 @@ class LeanAcceptance(unittest.TestCase):
     def test_nmms_rule_kernel_examples(self):
         self.lean("tests/NmmsRules.lean")
 
+    def test_book_rule_correspondence(self):
+        self.assertIn("BOOK_RULES_AXIOMS_OK", self.lean("tests/BookRules.lean"))
+
+    def test_compiled_project_proofs(self):
+        proc = subprocess.run(
+            ["lake", "env", "leanchecker", "--verbose", "LeanNmms", "Main"],
+            cwd=LEAN, text=True, capture_output=True, timeout=120,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        output = proc.stdout + proc.stderr
+        self.assertIn("replaying Main", output)
+        self.assertIn("replaying LeanNmms.Calculus", output)
+
     def test_ordered_derivation_json_entry_point(self):
         a, b, c, z = [{"atom": name} for name in ("seed", "mid", "ready", "intruder")]
         base = {"language": ["seed", "mid", "ready", "intruder"], "consequences": [
@@ -136,7 +149,16 @@ class LeanAcceptance(unittest.TestCase):
         for bracket in re.findall(r"\[([^\]]*)\]", output, re.S):
             self.assertLessEqual(set(re.findall(r"[A-Za-z_][\w.]*", bracket)),
                                  {"propext", "Classical.choice", "Quot.sound"})
-        self.assertIn("FIXES_AXIOMS_OK", self.lean("tests/FixesAxioms.lean"))
+        self.assertIn("FIXES_AXIOMS_OK", self.lean("tests/AllConstantsAxioms.lean"))
+
+
+def load_tests(loader, suite, pattern):
+    # CI explicitly names this module. Include the independent forward-rule
+    # suite there too; unittest discovery finds its own module separately.
+    if pattern is None:
+        from tests import test_nmms_forward
+        suite.addTests(loader.loadTestsFromModule(test_nmms_forward))
+    return suite
 
 
 if __name__ == "__main__":
