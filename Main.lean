@@ -117,6 +117,20 @@
 
   A query with "op": "score" checks a score certificate from an external library;
   see `LeanNmms/Score.lean`.
+
+  Weighted queries (tracer N, `LeanNmms/Possibilistic.lean`). Each entry of
+  the base may carry "weight": a string "n/d" or "n" of decimal digits (at
+  most 40 each), read as the rational n/d in [0,1]; a JSON number is refused,
+  so no float ever reaches the scale. A query with "threshold": "n/d" is
+  answered as above, over the cut: the entries weighted at least n/d, with
+  "threshold" echoed; a query with "degree": true answers {"id", "degree":
+  "n/d" or null}, `NMMS.Possibilistic.degree?`, the largest candidate
+  threshold whose cut derives the sequent (null when no cut does, the whole
+  base included; "0/1" means the whole base only). Either kind of weighted
+  query needs a weight on every entry; a weight on an entry of an unweighted
+  query is refused, as are "threshold" and "degree" together. The cut
+  theorem (`NMMS.Possibilistic.cut_theorem`) proves "degree" ≥ t exactly
+  when the "threshold": t query is derivable.
 -/
 import Lean.Data.Json
 import LeanNmms
@@ -204,9 +218,31 @@ def parseRobustness (j? : Option Json) : Except String (Robustness String) := do
     return if kind == "exact" then .exact else .monotone
   | k => throw s!"unknown robustness kind {k}"
 
-/-- A parsed base: its entries and, when given, its language L_B. -/
+/-- A weight for a weighted query (`LeanNmms/Possibilistic.lean`): a string
+"n/d" or "n" of decimal digits, at most 40 each, read as the rational n/d in
+[0,1]. Strings only: a JSON number is refused, so no float reaches the scale. -/
+def parseWeight (j : Json) : Except String Possibilistic.Q01 := do
+  let s ← match j with
+    | Json.str s => pure s
+    | v => throw s!"a weight must be a string \"n/d\" of digits, not {v.compress}"
+  let digits (t : String) : Except String Nat :=
+    if t.isEmpty || t.length > 40 || !t.all Char.isDigit then
+      throw s!"bad weight {s.quote}: expected \"n/d\" with at most 40 digits each"
+    else pure t.toNat!
+  let (n, d) ← match s.splitOn "/" with
+    | [a] => do pure (← digits a, 1)
+    | [a, b] => do pure (← digits a, ← digits b)
+    | _ => throw s!"bad weight {s.quote}: expected \"n/d\""
+  if hd : 0 < d then
+    if hn : n ≤ d then pure ⟨n, d, hd, hn⟩
+    else throw s!"weight {s.quote} is above 1"
+  else throw s!"weight {s.quote} has denominator 0"
+
+/-- A parsed base: its entries, each entry's weight when given, and, when
+given, its language L_B. -/
 structure ParsedBase where
   entries : List (Entry String)
+  weights : List (Option Possibilistic.Q01)
   language : Option (List String)
 
 /-- Every atom of a formula. -/
@@ -240,12 +276,16 @@ def parseBase (j : Json) : Except String ParsedBase := do
   let language ← match field? j "language" with
     | none | some Json.null => pure none
     | some v => some <$> strList v
-  let entries ← cs.mapM fun e => do
+  let parsed ← cs.mapM fun e => do
     let ant ← strList (← e.getObjVal? "antecedent")
     let con ← strList (← e.getObjVal? "consequent")
     let rob ← parseRobustness (field? e "robustness")
-    pure ({ ant, con, rob } : Entry String)
-  let pb : ParsedBase := { entries, language }
+    let w ← match field? e "weight" with
+      | none | some Json.null => pure none
+      | some v => some <$> parseWeight v
+    pure (({ ant, con, rob } : Entry String), w)
+  let entries := parsed.map (·.1)
+  let pb : ParsedBase := { entries, weights := parsed.map (·.2), language }
   for e in entries do
     checkLanguage pb "the base" (e.ant ++ e.con)
     if (entries.filter fun e' => setEqB e.ant e'.ant && setEqB e.con e'.con).length > 1 then
@@ -418,7 +458,34 @@ def handle (line : String) (members : Nat) : Json :=
       let Γ ← (← (← j.getObjVal? "antecedent").getArr?).toList.mapM parseFormula
       let Δ ← (← (← j.getObjVal? "consequent").getArr?).toList.mapM parseFormula
       checkFormulas pb "the sequent" (Γ ++ Δ)
-      let R := baseRel pb.entries
+      -- Weighted queries (see the header): a threshold, or the degree.
+      let threshold ← match field? j "threshold" with
+        | none | some Json.null => pure none
+        | some v => some <$> parseWeight v
+      let askDegree ← match field? j "degree" with
+        | none | some Json.null | some (Json.bool false) => pure false
+        | some (Json.bool true) => pure true
+        | some v => throw s!"\"degree\" must be true or false, not {v.compress}"
+      if threshold.isSome && askDegree then
+        throw "give \"threshold\" or \"degree\": true, not both"
+      let weighted : Option (Possibilistic.WBase String Possibilistic.Q01) ←
+        if threshold.isSome || askDegree then
+          let ws ← pb.weights.mapM fun
+            | some w => pure w
+            | none => throw "a weighted query needs a \"weight\" on every entry of the base"
+          pure (some (List.zipWith (fun e w => ⟨e, w⟩) pb.entries ws))
+        else if pb.weights.any Option.isSome then
+          throw "entry weights given, but the query has neither \"threshold\" nor \"degree\": true"
+        else pure none
+      if askDegree then
+        let some wb := weighted | throw "no weighted base"
+        let dg : Json := match Possibilistic.degree? wb Γ Δ with
+          | none => Json.null
+          | some w => Json.str w.toString
+        return Json.mkObj [("id", id), ("degree", dg)]
+      let R := match threshold, weighted with
+        | some t, some wb => baseRel (Possibilistic.cut wb t)
+        | _, _ => baseRel pb.entries
       let backtracking ← match field? j "engine" with
         | none | some Json.null => pure false
         | some (Json.str "fast") => pure false
@@ -437,8 +504,11 @@ def handle (line : String) (members : Nat) : Json :=
           let c ← parseCert cj
           checkFormulas pb "the certificate" (certFormulas c)
           pure (Json.bool (check R c Γ Δ))
-      pure (Json.mkObj [("id", id), ("derivable", Json.bool d), ("cert_ok", certOk),
-        ("refute_ok", refOk), ("refute_len", refLen)])
+      let fields := [("id", id), ("derivable", Json.bool d), ("cert_ok", certOk),
+        ("refute_ok", refOk), ("refute_len", refLen)]
+      pure (Json.mkObj (match threshold with
+        | some t => fields ++ [("threshold", Json.str t.toString)]
+        | none => fields))
     match r with
     | .ok out => out
     | .error e => Json.mkObj [("id", id), ("error", Json.str e)]

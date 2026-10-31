@@ -125,6 +125,36 @@ that (each rule takes its context explicitly). Nothing else is built in.
   `checkEntitlement_sound` (Entitlement.lean). These are separate
   calculations, not NMMS derivability.
 
+## Possibilistic weights (tracer N)
+
+[`LeanNmms/Possibilistic.lean`](LeanNmms/Possibilistic.lean) is a graded
+theory *on top of* the book's calculus, named apart from it: each entry of a
+pyNMMS base carries a weight in a scale with 0 and 1 (an abstract decidable
+total preorder, `Scale`; the rationals in [0,1], `Q01`, are the executable
+instance), the cut `B_t` is the entries weighted `t` or more, for every `t`
+including 0, and `DerivableAt B t` is `Derivable` over `baseRel (cut B t)`,
+so `reasoner_correct` carries over to every threshold (`derivableAt_iff`).
+The degree `degree? B Γ Δ : Option W` is the largest candidate threshold (0
+or an entry's weight) whose cut derives the sequent; `none` means no cut
+does, `some 0` the whole base only. Proved, with no `sorry` and the same
+three axioms: the calculus is monotone in the base (`derivable_mono`); the
+cut is antitone in `t` (`cut_antitone`, `derivableAt_antitone`); **the cut
+theorem**, degree ≥ `t` exactly when `B_t` derives, every `t` including 0
+(`cut_theorem`); the degree is the attained sup, unique up to the preorder
+(`degree_sup`, `degree_sup_unique`), never lowered by adding entries
+(`degree_mono_base`), and decidable (`decidableDegreeGe`); **the
+weakest-link rule**, the degree is the max over deriving selections of
+entries of their least weight (`weakest_link_lower`,
+`weakest_link_attained`); and over an all-ones base the degree is 1 for
+exactly the derivable sequents (`degree_lift`). A source's own uncertainty
+combines with the holder's weight by `min` (`combine`). `nmms-lean` answers
+weighted queries, `"threshold"` and `"degree": true`, with a `"weight"` string
+`"n/d"` per entry (see `Main.lean`'s header);
+[`tests/test_possibilistic_cli.py`](tests/test_possibilistic_cli.py) checks
+them and [`tests/PossibilisticExamples.lean`](tests/PossibilisticExamples.lean)
+computes the shared example in the kernel. The state, plan and definition of
+done are in [`docs/tracer-n.md`](docs/tracer-n.md).
+
 ## Checks against the published rules
 
 [`tests/BookRules.lean`](tests/BookRules.lean) separately transcribes the
