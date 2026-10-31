@@ -1,5 +1,5 @@
 /-
-  LeanNmms.Possibilistic — possibilistic NMMS (tracer N). STATEMENTS ONLY.
+  LeanNmms.Possibilistic — possibilistic NMMS (tracer N).
 
   This module is the graded theory, named apart from the book's NMMS: the
   book's calculus (`Derivable`, LeanNmms.Calculus) is unchanged, and every
@@ -10,9 +10,6 @@
   scale with 0 and 1, and a sequent's *degree* is the largest threshold `t`
   at which the entries weighted `t` or more still derive it.
 
-  Status (31 Oct 2026): every theorem marked `sorry` is a statement to be
-  proved next, on this branch only; the branch is never merged with a
-  `sorry`. `tests/AllConstantsAxioms.lean` fails on purpose until then.
   See docs/tracer-n.md for the state, the plan and the definition of done.
 
   Design decisions, with reasons:
@@ -42,24 +39,17 @@
     this sure". The source's supplied value is a preserved record on the
     graph side (graph-nmms), never overwritten by the combination.
 
-  What follows from existing lemmas (no new proof idea):
-  * `derivableAt_iff` is `reasoner_correct` (Decide.lean) over the cut.
-  * `derivableAt_antitone` is `derivable_mono` + `baseRel_mono` + `cut_antitone`.
-  * `derivableAt_zero_iff`, `derivableAt_lift` are rewrites with `cut_zero`,
-    `cut_lift`.
-  * `degree_none_iff`, `degree_sup`, `degree_sup_unique`, the decidability
-    instance for `DegreeGe` and `degree_mono_base` all follow from
-    `cut_theorem` and `derivableAt_antitone`.
-  * `weakest_link_lower` and `weakest_link_attained` follow from
-    `cut_theorem` and base monotonicity (`derivable_mono`), with
-    `S := B.filter (d ≤ ·.weight)` as the witness of the second.
-  New proofs needed: `derivable_mono` (induction on `Derivable`),
-  `baseRel_mono` (`List.any` over a superset), `cut_zero`, `cut_antitone`,
-  `cut_lift` (`List.filter` with a predicate that is always true, or
-  implied), `cut_theorem` (the one real argument: given derivability at
-  `t`, the least weight `m` of `cut B t` is a candidate with `t ≤ m` and
-  `cut B m ⊇ cut B t`, and `maxList` of the derivable candidates is at
-  least `m`), `Q01.le_trans` (cross-multiplication in `Nat`).
+  What is proved, in order: base monotonicity of the book's calculus
+  (`derivable_mono`, by induction on `Derivable`, the only new fact about
+  NMMS itself); the cut in `t` (`cut_zero`, `cut_antitone`); the cut
+  theorem (`cut_theorem`: given derivability at `t`, the least weight `m`
+  among the entries kept at `t` is a candidate with `t ≤ m` whose cut
+  contains the cut at `t`); its corollaries (`degree_none_iff`,
+  `degree_sup`, `degree_sup_unique`, `degree_mono_base`, decidability of
+  `DegreeGe`); the weakest-link rule (`weakest_link_lower`,
+  `weakest_link_attained`); agreement with the unweighted calculus when
+  every weight is `one` (`derivableAt_lift`, `degree_lift`); and the `min`
+  combination's bounds.
 -/
 import LeanNmms.Decide
 
@@ -146,6 +136,138 @@ instance : Repr Q01 := ⟨fun w _ => Std.Format.text w.toString⟩
 
 end Q01
 
+/-! ### Max and min on the scale -/
+
+def maxW (a b : W) : W := if a ≤ b then b else a
+def minW (a b : W) : W := if a ≤ b then a else b
+
+theorem maxW_left (a b : W) : a ≤ maxW a b := by
+  unfold maxW; split
+  · assumption
+  · exact le_refl a
+
+theorem maxW_right (a b : W) : b ≤ maxW a b := by
+  unfold maxW; split
+  · exact le_refl b
+  · rename_i h; exact (le_total a b).resolve_left h
+
+theorem maxW_eq (a b : W) : maxW a b = a ∨ maxW a b = b := by
+  unfold maxW; split
+  · exact Or.inr rfl
+  · exact Or.inl rfl
+
+theorem minW_left (a b : W) : minW a b ≤ a := by
+  unfold minW; split
+  · exact le_refl a
+  · rename_i h; exact (le_total a b).resolve_left h
+
+theorem minW_right (a b : W) : minW a b ≤ b := by
+  unfold minW; split
+  · assumption
+  · exact le_refl b
+
+/-- The greatest element of a list, `none` for the empty list. -/
+def maxList : List W → Option W
+  | [] => none
+  | t :: l => some (match maxList l with | none => t | some m => maxW t m)
+
+/-- The least element of a list, `none` for the empty list. -/
+def minList : List W → Option W
+  | [] => none
+  | t :: l => some (match minList l with | none => t | some m => minW t m)
+
+theorem maxList_cons (t : W) (l : List W) :
+    maxList (t :: l) = some (match maxList l with | none => t | some m => maxW t m) := rfl
+
+theorem minList_cons (t : W) (l : List W) :
+    minList (t :: l) = some (match minList l with | none => t | some m => minW t m) := rfl
+
+theorem maxList_none {l : List W} (h : maxList l = none) : l = [] := by
+  cases l with
+  | nil => rfl
+  | cons t l => simp [maxList] at h
+
+theorem minList_none {l : List W} (h : minList l = none) : l = [] := by
+  cases l with
+  | nil => rfl
+  | cons t l => simp [minList] at h
+
+/-- The maximum is a member. -/
+theorem maxList_mem {l : List W} {m : W} (h : maxList l = some m) : m ∈ l := by
+  induction l generalizing m with
+  | nil => simp [maxList] at h
+  | cons t l ih =>
+    rw [maxList_cons] at h
+    cases hl : maxList l with
+    | none =>
+      rw [hl] at h; simp only [Option.some.injEq] at h; subst h
+      exact List.mem_cons.mpr (Or.inl rfl)
+    | some m' =>
+      rw [hl] at h; simp only [Option.some.injEq] at h; subst h
+      rcases maxW_eq t m' with e | e <;> rw [e]
+      · exact List.mem_cons.mpr (Or.inl rfl)
+      · exact List.mem_cons.mpr (Or.inr (ih hl))
+
+/-- The minimum is a member. -/
+theorem minList_mem {l : List W} {m : W} (h : minList l = some m) : m ∈ l := by
+  induction l generalizing m with
+  | nil => simp [minList] at h
+  | cons t l ih =>
+    rw [minList_cons] at h
+    cases hl : minList l with
+    | none =>
+      rw [hl] at h; simp only [Option.some.injEq] at h; subst h
+      exact List.mem_cons.mpr (Or.inl rfl)
+    | some m' =>
+      rw [hl] at h; simp only [Option.some.injEq] at h; subst h
+      unfold minW; split
+      · exact List.mem_cons.mpr (Or.inl rfl)
+      · exact List.mem_cons.mpr (Or.inr (ih hl))
+
+/-- Every member is at most the maximum, which exists. -/
+theorem maxList_ge {l : List W} {x : W} (hx : x ∈ l) : ∃ m, maxList l = some m ∧ x ≤ m := by
+  induction l with
+  | nil => simp at hx
+  | cons t l ih =>
+    rw [maxList_cons]
+    cases hl : maxList l with
+    | none =>
+      have := maxList_none hl
+      subst this
+      simp only [List.mem_cons, List.not_mem_nil, or_false] at hx
+      subst hx
+      exact ⟨x, rfl, le_refl x⟩
+    | some m' =>
+      refine ⟨maxW t m', rfl, ?_⟩
+      rcases List.mem_cons.mp hx with e | hx'
+      · subst e; exact maxW_left _ _
+      · obtain ⟨m'', hm'', hle⟩ := ih hx'
+        rw [hl] at hm''
+        injection hm'' with e
+        subst e
+        exact le_trans hle (maxW_right _ _)
+
+/-- The minimum is at most every member. -/
+theorem minList_le {l : List W} {m : W} (h : minList l = some m) : ∀ x, x ∈ l → m ≤ x := by
+  induction l generalizing m with
+  | nil => simp [minList] at h
+  | cons t l ih =>
+    intro x hx
+    rw [minList_cons] at h
+    cases hl : minList l with
+    | none =>
+      rw [hl] at h; simp only [Option.some.injEq] at h; subst h
+      have := minList_none hl
+      subst this
+      simp only [List.mem_cons, List.not_mem_nil, or_false] at hx
+      subst hx
+      exact le_refl x
+    | some m' =>
+      rw [hl] at h; simp only [Option.some.injEq] at h; subst h
+      rcases List.mem_cons.mp hx with e | hx'
+      · subst e; exact minW_left _ _
+      · exact le_trans (minW_right _ _) (ih hl x hx')
+
 /-! ### Weighted bases and their cuts -/
 
 variable {α : Type} [DecidableEq α]
@@ -166,13 +288,17 @@ scale, `zero` included. -/
 def cut (B : WBase α W) (t : W) : List (Entry α) :=
   (B.filter (fun e => decide (t ≤ e.weight))).map (·.entry)
 
+theorem mem_cut {B : WBase α W} {t : W} {e : Entry α} :
+    e ∈ cut B t ↔ ∃ x, (x ∈ B ∧ t ≤ x.weight) ∧ x.entry = e := by
+  simp [cut]
+
 /-- `Γ ⇒ Δ` is derivable at threshold `t`: NMMS derivability (the book's
 calculus, unchanged) over the cut `B_t`. -/
 def DerivableAt (B : WBase α W) (t : W) (Γ Δ : List (Formula α)) : Prop :=
   Derivable (baseRel (cut B t)) Γ Δ
 
 /-- Derivability at a threshold is decidable, by the existing instance over
-a pyNMMS base (LeanNmms.Decide). No new proof. -/
+a pyNMMS base (LeanNmms.Decide). -/
 instance (B : WBase α W) (t : W) (Γ Δ : List (Formula α)) : Decidable (DerivableAt B t Γ Δ) :=
   inferInstanceAs (Decidable (Derivable (baseRel (cut B t)) Γ Δ))
 
@@ -181,25 +307,10 @@ def derivableAt (B : WBase α W) (t : W) (Γ Δ : List (Formula α)) : Bool :=
   fastProve (baseRel (cut B t)) Γ Δ
 
 /-- The procedure is correct at every threshold: `reasoner_correct` over the
-cut. Follows from the existing lemma. -/
+cut. -/
 theorem derivableAt_iff (B : WBase α W) (t : W) (Γ Δ : List (Formula α)) :
     derivableAt B t Γ Δ = true ↔ DerivableAt B t Γ Δ :=
   (reasoner_correct (cut B t) Γ Δ).1
-
-/-! ### Max and min on the scale -/
-
-def maxW (a b : W) : W := if a ≤ b then b else a
-def minW (a b : W) : W := if a ≤ b then a else b
-
-/-- The greatest element of a list, `none` for the empty list. -/
-def maxList : List W → Option W
-  | [] => none
-  | t :: l => some (match maxList l with | none => t | some m => maxW t m)
-
-/-- The least element of a list, `none` for the empty list. -/
-def minList : List W → Option W
-  | [] => none
-  | t :: l => some (match minList l with | none => t | some m => minW t m)
 
 /-! ### The degree -/
 
@@ -217,7 +328,7 @@ def degree? (B : WBase α W) (Γ Δ : List (Formula α)) : Option W :=
 def DegreeGe (B : WBase α W) (t : W) (Γ Δ : List (Formula α)) : Prop :=
   ∃ d, degree? B Γ Δ = some d ∧ t ≤ d
 
-/-! ### Base monotonicity (new, small) -/
+/-! ### Base monotonicity -/
 
 /-- The empty base is `emptyBase`: nothing is derivable over it. -/
 theorem derivable_nil {Γ Δ : List (Formula α)} :
@@ -228,38 +339,62 @@ theorem derivable_nil {Γ Δ : List (Formula α)} :
 relation derives everything a smaller one does. Induction on `Derivable`. -/
 theorem derivable_mono {R R' : BaseRel α} (h : ∀ X Y, R X Y = true → R' X Y = true)
     {Γ Δ : List (Formula α)} : Derivable R Γ Δ → Derivable R' Γ Δ := by
-  sorry
+  intro d
+  induction d with
+  | ax hΓ hΔ hR => exact Derivable.ax hΓ hΔ (h _ _ hR)
+  | negL e _ ih => exact Derivable.negL e ih
+  | implL e _ _ _ ih1 ih2 ih3 => exact Derivable.implL e ih1 ih2 ih3
+  | conjL e _ ih => exact Derivable.conjL e ih
+  | disjL e _ _ _ ih1 ih2 ih3 => exact Derivable.disjL e ih1 ih2 ih3
+  | negR e _ ih => exact Derivable.negR e ih
+  | implR e _ ih => exact Derivable.implR e ih
+  | conjR e _ _ _ ih1 ih2 ih3 => exact Derivable.conjR e ih1 ih2 ih3
+  | disjR e _ ih => exact Derivable.disjR e ih
 
 /-- More entries, a larger base relation. -/
 theorem baseRel_mono {B1 B2 : List (Entry α)} (h : ∀ e, e ∈ B1 → e ∈ B2) (X Y : List α) :
     baseRel B1 X Y = true → baseRel B2 X Y = true := by
-  sorry
+  simp only [baseRel, List.any_eq_true]
+  intro ⟨e, he, hm⟩
+  exact ⟨e, h e he, hm⟩
+
+/-- Derivability over a sub-base carries to the base. -/
+theorem derivable_of_subset {B1 B2 : List (Entry α)} (h : ∀ e, e ∈ B1 → e ∈ B2)
+    {Γ Δ : List (Formula α)} : Derivable (baseRel B1) Γ Δ → Derivable (baseRel B2) Γ Δ :=
+  derivable_mono (fun X Y => baseRel_mono h X Y)
 
 /-! ### The cut in `t` -/
 
 /-- **`B_zero` is the whole base**: an entry weighted 0 takes part at
 threshold 0. -/
 theorem cut_zero (B : WBase α W) : cut B Scale.zero = B.entries := by
-  sorry
+  unfold cut WBase.entries
+  rw [List.filter_eq_self.mpr (fun e _ => decide_eq_true (zero_le e.weight))]
 
 /-- **Monotonicity of the cut**: a lower threshold keeps every entry a
 higher one keeps. -/
 theorem cut_antitone {s t : W} (h : s ≤ t) (B : WBase α W) :
     ∀ e, e ∈ cut B t → e ∈ cut B s := by
-  sorry
+  intro e he
+  rw [mem_cut] at he ⊢
+  obtain ⟨x, ⟨hx, hxt⟩, rfl⟩ := he
+  exact ⟨x, ⟨hx, le_trans h hxt⟩, rfl⟩
 
 /-- Every cut is part of the base. -/
 theorem cut_subset (B : WBase α W) (t : W) : ∀ e, e ∈ cut B t → e ∈ B.entries := by
-  sorry
+  intro e he
+  rw [mem_cut] at he
+  obtain ⟨x, ⟨hx, _⟩, rfl⟩ := he
+  exact List.mem_map.mpr ⟨x, hx, rfl⟩
 
 /-- **Monotonicity of derivability in `t`**: derivable at `t` implies
-derivable at every `s ≤ t`. Follows from the three lemmas above. -/
+derivable at every `s ≤ t`. -/
 theorem derivableAt_antitone {B : WBase α W} {s t : W} (h : s ≤ t)
     {Γ Δ : List (Formula α)} : DerivableAt B t Γ Δ → DerivableAt B s Γ Δ :=
-  derivable_mono (fun X Y => baseRel_mono (cut_antitone h B) X Y)
+  derivable_of_subset (cut_antitone h B)
 
 /-- At threshold 0, derivability is the unweighted derivability over all the
-entries. Follows from `cut_zero`. -/
+entries. -/
 theorem derivableAt_zero_iff (B : WBase α W) (Γ Δ : List (Formula α)) :
     DerivableAt B Scale.zero Γ Δ ↔ Derivable (baseRel B.entries) Γ Δ := by
   rw [DerivableAt, cut_zero]
@@ -271,39 +406,94 @@ the scale, `zero` included, the degree of `Γ ⇒ Δ` is at least `t` exactly
 when `Γ ⇒ Δ` is derivable over the entries weighted `t` or more. -/
 theorem cut_theorem (B : WBase α W) (t : W) (Γ Δ : List (Formula α)) :
     DegreeGe B t Γ Δ ↔ DerivableAt B t Γ Δ := by
-  sorry
+  constructor
+  · intro ⟨d, hd, htd⟩
+    have hmem := maxList_mem hd
+    have hD : derivableAt B d Γ Δ = true := (List.mem_filter.mp hmem).2
+    exact derivableAt_antitone htd ((derivableAt_iff B d Γ Δ).mp hD)
+  · intro hP
+    cases hS : B.filter (fun e => decide (t ≤ e.weight)) with
+    | nil =>
+      exfalso
+      have hc : cut B t = [] := by unfold cut; rw [hS]; rfl
+      rw [DerivableAt, hc] at hP
+      exact derivable_nil hP
+    | cons x S =>
+      cases hm : minList ((x :: S).map (·.weight)) with
+      | none => simp [minList] at hm
+      | some m =>
+        obtain ⟨y, hy, hyw⟩ := List.mem_map.mp (minList_mem hm)
+        subst hyw
+        have hyF : y ∈ B.filter (fun e => decide (t ≤ e.weight)) := by rw [hS]; exact hy
+        have hyB : y ∈ B ∧ t ≤ y.weight := by
+          have := List.mem_filter.mp hyF
+          exact ⟨this.1, of_decide_eq_true this.2⟩
+        have hPm : DerivableAt B y.weight Γ Δ := by
+          refine derivable_of_subset ?_ hP
+          intro e he
+          rw [mem_cut] at he ⊢
+          obtain ⟨z, ⟨hzB, hzt⟩, rfl⟩ := he
+          refine ⟨z, ⟨hzB, ?_⟩, rfl⟩
+          have hz : z ∈ x :: S := by
+            rw [← hS]; exact List.mem_filter.mpr ⟨hzB, decide_eq_true hzt⟩
+          exact minList_le hm _ (List.mem_map.mpr ⟨z, hz, rfl⟩)
+        have hc : y.weight ∈ (candidates B).filter (fun u => derivableAt B u Γ Δ) := by
+          refine List.mem_filter.mpr ⟨?_, (derivableAt_iff B _ Γ Δ).mpr hPm⟩
+          exact List.mem_cons.mpr (Or.inr (List.mem_map.mpr ⟨y, hyB.1, rfl⟩))
+        obtain ⟨d, hd, hle⟩ := maxList_ge hc
+        exact ⟨d, hd, le_trans hyB.2 hle⟩
 
-/-- No degree exactly when not even the whole base derives the sequent.
-Follows from `cut_theorem` at `zero` and `derivableAt_zero_iff`. -/
+/-- No degree exactly when not even the whole base derives the sequent. -/
 theorem degree_none_iff (B : WBase α W) (Γ Δ : List (Formula α)) :
     degree? B Γ Δ = none ↔ ¬ Derivable (baseRel B.entries) Γ Δ := by
-  sorry
+  rw [← derivableAt_zero_iff, ← cut_theorem]
+  constructor
+  · intro h ⟨d, hd, _⟩
+    rw [h] at hd
+    cases hd
+  · intro h
+    cases hd : degree? B Γ Δ with
+    | none => rfl
+    | some d => exact absurd ⟨d, hd, zero_le d⟩ h
 
 /-- **The degree is the sup, and it is attained**: the sequent is derivable
-at its degree, and at no higher threshold. Follows from `cut_theorem`. -/
+at its degree, and at no higher threshold. -/
 theorem degree_sup {B : WBase α W} {Γ Δ : List (Formula α)} {d : W}
     (h : degree? B Γ Δ = some d) :
     DerivableAt B d Γ Δ ∧ ∀ t, DerivableAt B t Γ Δ → t ≤ d := by
-  sorry
+  constructor
+  · exact (cut_theorem B d Γ Δ).mp ⟨d, h, le_refl d⟩
+  · intro t ht
+    obtain ⟨d', hd', hle⟩ := (cut_theorem B t Γ Δ).mpr ht
+    rw [h] at hd'
+    injection hd' with e
+    subst e
+    exact hle
 
 /-- The sup is unique up to the preorder: any other attained maximum
-compares equal both ways. Follows from `degree_sup`. -/
+compares equal both ways. -/
 theorem degree_sup_unique {B : WBase α W} {Γ Δ : List (Formula α)} {d d' : W}
     (h : degree? B Γ Δ = some d) (hd' : DerivableAt B d' Γ Δ)
-    (hmax : ∀ t, DerivableAt B t Γ Δ → t ≤ d') : d ≤ d' ∧ d' ≤ d := by
-  sorry
+    (hmax : ∀ t, DerivableAt B t Γ Δ → t ≤ d') : d ≤ d' ∧ d' ≤ d :=
+  ⟨hmax d (degree_sup h).1, (degree_sup h).2 d' hd'⟩
 
-/-- Adding entries never lowers a degree (NMMS is monotone in the base).
-Follows from `cut_theorem`, `derivable_mono` and `baseRel_mono`. -/
+/-- Adding entries never lowers a degree (NMMS is monotone in the base). -/
 theorem degree_mono_base {B1 B2 : WBase α W} (h : ∀ e, e ∈ B1 → e ∈ B2)
     {Γ Δ : List (Formula α)} {d : W} (hd : degree? B1 Γ Δ = some d) :
     ∃ d', degree? B2 Γ Δ = some d' ∧ d ≤ d' := by
-  sorry
+  have h1 : DerivableAt B1 d Γ Δ := (degree_sup hd).1
+  have h2 : DerivableAt B2 d Γ Δ := by
+    refine derivable_of_subset ?_ h1
+    intro e he
+    rw [mem_cut] at he ⊢
+    obtain ⟨x, ⟨hx, hxd⟩, rfl⟩ := he
+    exact ⟨x, ⟨h x hx, hxd⟩, rfl⟩
+  exact (cut_theorem B2 d Γ Δ).mpr h2
 
 /-! ### Decidability of the degree for finite bases -/
 
 /-- `degree?` is a computable function of a finite base (it is a `def`
-built from `fastProve`), so "degree ≥ t" is decidable: by `cut_theorem` it
+built from `fastProve`), and "degree ≥ t" is decidable: by `cut_theorem` it
 is the decidable `DerivableAt`. -/
 instance decidableDegreeGe (B : WBase α W) (t : W) (Γ Δ : List (Formula α)) :
     Decidable (DegreeGe B t Γ Δ) :=
@@ -317,7 +507,13 @@ theorem weakest_link_lower {B S : WBase α W} (hS : ∀ e, e ∈ S → e ∈ B)
     {m : W} (hm : minList (S.map (·.weight)) = some m)
     {Γ Δ : List (Formula α)} (hd : Derivable (baseRel S.entries) Γ Δ) :
     DegreeGe B m Γ Δ := by
-  sorry
+  rw [cut_theorem]
+  refine derivable_of_subset ?_ hd
+  intro e he
+  simp only [WBase.entries, List.mem_map] at he
+  obtain ⟨x, hx, rfl⟩ := he
+  rw [mem_cut]
+  exact ⟨x, ⟨hS x hx, minList_le hm _ (List.mem_map.mpr ⟨x, hx, rfl⟩)⟩, rfl⟩
 
 /-- **Weakest link, attained**: the degree `d` is the least weight of some
 selection of entries that derives the sequent (`cut B d` is one). Together
@@ -327,7 +523,23 @@ theorem weakest_link_attained {B : WBase α W} {Γ Δ : List (Formula α)} {d : 
     (h : degree? B Γ Δ = some d) :
     ∃ S : WBase α W, (∀ e, e ∈ S → e ∈ B) ∧ Derivable (baseRel S.entries) Γ Δ ∧
       ∃ m, minList (S.map (·.weight)) = some m ∧ d ≤ m := by
-  sorry
+  have h1 : DerivableAt B d Γ Δ := (degree_sup h).1
+  refine ⟨B.filter (fun e => decide (d ≤ e.weight)), fun e he => (List.mem_filter.mp he).1, h1, ?_⟩
+  cases hS : B.filter (fun e => decide (d ≤ e.weight)) with
+  | nil =>
+    exfalso
+    have hc : cut B d = [] := by unfold cut; rw [hS]; rfl
+    rw [DerivableAt, hc] at h1
+    exact derivable_nil h1
+  | cons x S =>
+    cases hm : minList ((x :: S).map (·.weight)) with
+    | none => simp [minList] at hm
+    | some m =>
+      refine ⟨m, rfl, ?_⟩
+      obtain ⟨y, hy, hyw⟩ := List.mem_map.mp (minList_mem hm)
+      subst hyw
+      have hyF : y ∈ B.filter (fun e => decide (d ≤ e.weight)) := by rw [hS]; exact hy
+      exact of_decide_eq_true (List.mem_filter.mp hyF).2
 
 /-! ### Agreement with the unweighted NMMS when every weight is 1 -/
 
@@ -335,24 +547,70 @@ theorem weakest_link_attained {B : WBase α W} {Γ Δ : List (Formula α)} {d : 
 def lift (B : List (Entry α)) : WBase α W := B.map (fun e => ⟨e, Scale.one⟩)
 
 theorem lift_entries (B : List (Entry α)) : (lift (W := W) B).entries = B := by
-  sorry
+  induction B with
+  | nil => rfl
+  | cons e B ih =>
+    simp only [lift, WBase.entries, List.map_cons] at ih ⊢
+    rw [ih]
 
 /-- Every cut of an all-ones base is the whole base (`le_one`). -/
 theorem cut_lift (B : List (Entry α)) (t : W) : cut (lift B) t = B := by
-  sorry
+  induction B with
+  | nil => rfl
+  | cons e B ih =>
+    simp only [cut, lift, List.map_cons, List.filter_cons] at ih ⊢
+    simp [le_one, ih]
 
 /-- At every threshold, derivability over the all-ones base is the book's
-derivability over the unweighted base. Follows from `cut_lift`. -/
+derivability over the unweighted base. -/
 theorem derivableAt_lift (B : List (Entry α)) (t : W) (Γ Δ : List (Formula α)) :
     DerivableAt (lift B) t Γ Δ ↔ Derivable (baseRel B) Γ Δ := by
   rw [DerivableAt, cut_lift]
+
+theorem maxW_self (a : W) : maxW a a = a := by
+  simp [maxW]
+
+theorem maxList_ones {β : Type} (l : List β) :
+    maxList (Scale.one :: l.map (fun _ => (Scale.one : W))) = some Scale.one := by
+  induction l with
+  | nil => rfl
+  | cons _ l ih =>
+    rw [List.map_cons, maxList_cons, ih]
+    show some (maxW Scale.one Scale.one) = some Scale.one
+    rw [maxW_self]
+
+theorem maxList_zero_ones {β : Type} (l : List β) (hl : l ≠ []) :
+    maxList (Scale.zero :: l.map (fun _ => (Scale.one : W))) = some Scale.one := by
+  cases l with
+  | nil => exact absurd rfl hl
+  | cons _ l =>
+    rw [List.map_cons, maxList_cons, maxList_ones]
+    show some (maxW Scale.zero Scale.one) = some Scale.one
+    simp [maxW, zero_le]
 
 /-- **Agreement with NMMS**: over the all-ones base the degree is `one` for
 exactly the derivable sequents and `none` for the rest. -/
 theorem degree_lift (B : List (Entry α)) (Γ Δ : List (Formula α)) :
     degree? (lift (W := W) B) Γ Δ =
       (if fastProve (baseRel B) Γ Δ then some Scale.one else none) := by
-  sorry
+  have hall : ∀ t : W, derivableAt (lift B) t Γ Δ = fastProve (baseRel B) Γ Δ := by
+    intro t; unfold derivableAt; rw [cut_lift]
+  split
+  · rename_i hf
+    have hB : B ≠ [] := by
+      intro hB
+      subst hB
+      exact derivable_nil ((reasoner_correct [] Γ Δ).1.mp hf)
+    unfold degree?
+    rw [List.filter_eq_self.mpr (fun t _ => by rw [hall t]; exact hf)]
+    have hc : candidates (lift (W := W) B) = Scale.zero :: B.map (fun _ => (Scale.one : W)) := by
+      simp [candidates, lift]
+    rw [hc]
+    exact maxList_zero_ones B hB
+  · rename_i hf
+    rw [degree_none_iff, lift_entries]
+    intro hd
+    exact hf ((reasoner_correct B Γ Δ).1.mpr hd)
 
 /-! ### A source's own uncertainty, combined with the holder's weight -/
 
@@ -362,11 +620,11 @@ supplied value stays a preserved record elsewhere; this is only the
 effective weight. -/
 def combine (holder source : W) : W := minW holder source
 
-theorem combine_le_holder (holder source : W) : combine holder source ≤ holder := by
-  sorry
+theorem combine_le_holder (holder source : W) : combine holder source ≤ holder :=
+  minW_left holder source
 
-theorem combine_le_source (holder source : W) : combine holder source ≤ source := by
-  sorry
+theorem combine_le_source (holder source : W) : combine holder source ≤ source :=
+  minW_right holder source
 
 /-- A source that is fully sure leaves the holder's weight as it is. -/
 theorem combine_one (holder : W) : combine holder Scale.one = holder := by
