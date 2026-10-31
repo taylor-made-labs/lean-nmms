@@ -107,15 +107,65 @@ evaluated in Lean by `lake env lean` on the verified definition:
 **200 of 200 agree for seed 20261031, and 200 of 200 for seed 7** (the two
 runs took 106 s and 101 s). Default run: 40 cases.
 
-## Next steps (not in this round)
+## Round 2 (31 Oct): the review's medium, fixed
 
-1. Send weights through graph-nmms's `LeanNmmsReasoner` to the new
-   `"degree"` query, so the differential test compares two independent
-   paths (Python cut + plain query, versus Lean cut + degree) rather than
-   the Python computation against the Lean definition.
-2. Run the weighted merge-readiness case through the roles tracer's adapter
-   at two thresholds (the plan's last condition; the entry is in the test).
-3. Guarded entries in the generated bases of the differential test.
+`weight` in `possibilistic.py` took any string `Fraction` accepts ("+1/2",
+whitespace, "1_0/20", other scripts' digits, "0.5", "1e-5", "-0"), all of
+which Lean refuses, and "1e-10000000" or a large `Decimal` exponent could
+cost seconds or memory. Now a string must match `[0-9]{1,40}(/[0-9]{1,40})?`
+(`fullmatch`, ASCII only), the grammar of `parseWeight` in `Main.lean`;
+`Decimal` is refused outright (nothing needs it); `Fraction` and `int` stay.
+`ParserAgreement` in `tests/test_possibilistic.py` runs 39 adversarial
+strings through both parsers (the Lean one through the built `nmms-lean`)
+and requires the same acceptance and the same rational: 9 accepted, 30
+refused, identically. One existing case used the string "0.5"; it now uses
+"2/4", the same intent (equal fractions in different forms tie) under the
+agreed grammar.
+
+## Next steps, planned (not built in rounds 1–2)
+
+**1. Two independent paths in the differential test.** Today the test
+compares the Python computation (Python cut, plain `nmms-lean` query per
+candidate) with the Lean definition `degree?` run by `lake env lean`. The
+second path should be the shipped binary: graph-nmms sends the weighted base
+and `"degree": true` through `LeanNmmsReasoner`, and `nmms-lean` cuts and
+maximises on its own.
+- Build: `LeanNmmsReasoner.degree(snapshot, weights, *, antecedent,
+  consequent)` beside `query`: the same request binding (model id, content
+  revision, base, sequent, plus the weights, hashed into the request id) and
+  the same fail-closed reading (`"degree"` string or null; anything else, a
+  timeout or an exit code is inconclusive, never a verdict). `exact_base`
+  gains an optional `weights` mapping that writes each consequence's
+  `"weight"` as `str(Fraction)`, which is always in `WEIGHT_STRING`.
+  `possibilistic.degree_upstream(weighted, ant, con, reasoner)` calls it with
+  the effective weights.
+- Eval: the differential test compares `degree` (Python path) with
+  `degree_upstream` (binary path) on the same generated bases, 200 for two
+  seeds, plus the existing comparison with the Lean definition for one seed;
+  `LeanBaseViewChecker`'s projection check still applies to the unweighted
+  part of the base.
+- Done when: 200 of 200 agree for both seeds on both comparisons; the
+  request binding for a weighted query is covered by one test that alters a
+  weight after hashing and sees the mismatch refused.
+
+**2. The weighted merge-readiness case through the roles adapter.** The
+roles tracer (`~/work/roles-tracer`, hetzner) decides entitlement through
+`adapter/roles-decide` over `roles/roles.json`, whose `pm-merge` entry is the
+real case.
+- Build: a weights file beside the roles base, `roles/weights.json`, one
+  `"n/d"` per relation id (`pm-merge` at `1`; the agent-view entry added at
+  `3/5` with its source value `3/5` recorded beside it), and a `--threshold
+  n/d` option on `roles-decide` that builds a `WeightedBase`, cuts, and
+  decides as before over the cut; with no option, nothing changes.
+- Eval: the adapter's thirteen existing cases unchanged with no option; the
+  tested-only request answers "entitled" at threshold `1/2` and is refused at
+  `9/10`; the reviewed request answers "entitled" at both. Run through
+  `run-tests.sh`.
+- Done when: those 13 + 3 cases pass on hetzner against the merged mains of
+  lean-nmms and graph-nmms, and the roles tracer's `pins.json` moves to the
+  merged commits.
+
+3. (Later) guarded entries in the generated bases of the differential test.
 
 Side ideas go to the backlog, not here.
 
