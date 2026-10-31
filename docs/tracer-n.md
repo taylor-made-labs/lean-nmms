@@ -122,6 +122,46 @@ refused, identically. One existing case used the string "0.5"; it now uses
 "2/4", the same intent (equal fractions in different forms tie) under the
 agreed grammar.
 
+## Round 3 (31 Oct): the two next steps, built
+
+Branches `feat/tracer-n-next` from the merged mains (lean-nmms `3c656f1`,
+graph-nmms `5e34abd`); tests first in their own commits.
+
+**1. Two independent paths** (graph-nmms `tests/test_possibilistic_upstream.py`,
+6 tests, then one reasoner commit): `exact_base(snapshot, weights)` writes
+each consequence's `"weight"` as the exact rational's string;
+`LeanNmmsReasoner.degree` sends the weighted base with `"degree": true` so
+`nmms-lean` cuts and maximises itself, with the weights inside the hashed
+request binding `{"model_id", "content_revision", "base", "antecedent",
+"consequent", "degree": true}`, the answer required to echo the hash, and
+anything else inconclusive (`DegreeResult`); `possibilistic.degree_upstream`
+is that path for a `WeightedBase`. The tamper test alters one weight in the
+wire after hashing (self-consistently re-hashed by the tamperer) and sees
+the answer refused as unbound. The reasoner's declared upstream moved to
+lean-nmms main `3c656f1` (`PINNED_NMMS_REVISION`, `ci/pins.json`, readme);
+graph-nmms's own Lake dependency and legacy-kernel string stay at `acae35b`,
+a separate build, listed as a follow-up. `query` is untouched. Differential,
+Python path against binary path, 200 generated bases: **200 of 200 agree
+for seed 20261031 (151 s) and 200 of 200 for seed 7 (145 s)**; the
+tamper test and the binding-recomputation test pass.
+
+**2. The weighted merge-readiness case through the roles adapter**
+(`~/work/roles-tracer`, now with a bare repo `~/git/roles-tracer.git`):
+`roles/weights.json` (every policy entry at 1; an overlay with the agent's
+view `agent-merge-on-tests` at 3/5, its own value 3/5 kept beside it, and
+its fact `tests_passed`), `adapter/roles-decide --threshold n/d` deciding
+over the cut of the weighted base with the same two paths and pins, the
+derivation naming the threshold, the cut, the effective weights and the
+source values. `tests/cases-weighted.json` and `tests/test_weighted_cases.py`:
+tests-only merge entitled at 1/2 (by the agent view), refused at 9/10
+(flips: none, single-fact); reviewed merge entitled at both (by `pm-merge`);
+without `--threshold` the weighted fact is refused and bad thresholds too.
+`run-tests.sh`: all four blocks pass, the thirteen unweighted cases
+unchanged. `pins.json` moved to lean-nmms `3c656f1` (binary rebuilt, new
+sha256) and graph-nmms `0fdb2e2` (the reasoner commit, which the adapter's
+pin check needs; it equals main once fast-forwarded); `INSTALL.md` records
+the move.
+
 ## Next steps, planned (not built in rounds 1–2)
 
 **1. Two independent paths in the differential test.** Today the test
