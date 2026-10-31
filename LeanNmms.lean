@@ -14,3 +14,4 @@ import LeanNmms.Wire
 import LeanNmms.Ground
 import LeanNmms.Entitlement
 import LeanNmms.Score
+import LeanNmms.Possibilistic
